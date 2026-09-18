@@ -299,11 +299,6 @@ export default function App() {
         <div className="mx-auto flex flex-col items-center px-6 py-6" style={{ maxWidth: 520, minHeight: "100vh" }}>
           <div className="flex w-full items-center justify-between" style={{ color: MUTED }}>
             <span className="text-sm">{ROUTINES[session.routine].icon} {ROUTINES[session.routine].label}　{session.idx + 1} / {list.length}</span>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setSpeak((s) => !s)} className="text-sm" style={{ color: speak ? theme.accent : MUTED }}>{speak ? "🗣 語音" : "🔇 語音"}</button>
-              <button onClick={() => setSound((s) => !s)} className="text-sm" style={{ color: sound ? theme.accent : MUTED }}>{sound ? "🔊 節拍" : "🔈 節拍"}</button>
-              <button onClick={quit} className="text-sm" style={{ color: MUTED }}>結束 ✕</button>
-            </div>
           </div>
 
           <div className="mt-2 h-1 w-full rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
@@ -353,6 +348,12 @@ export default function App() {
             ) : (
               <button onClick={repDone} className="flex-1 rounded-xl px-4 py-3 text-base font-semibold" style={{ background: theme.accent, color: "#0c0f16" }}>✓ 完成打勾</button>
             )}
+          </div>
+
+          <div className="mt-4 flex w-full items-center justify-center gap-5 pb-2">
+            <button onClick={() => setSpeak((s) => !s)} className="text-sm" style={{ color: speak ? theme.accent : MUTED }}>{speak ? "🗣 語音" : "🔇 語音"}</button>
+            <button onClick={() => setSound((s) => !s)} className="text-sm" style={{ color: sound ? theme.accent : MUTED }}>{sound ? "🔊 節拍" : "🔈 節拍"}</button>
+            <button onClick={quit} className="text-sm" style={{ color: MUTED }}>結束 ✕</button>
           </div>
         </div>
       </div>
