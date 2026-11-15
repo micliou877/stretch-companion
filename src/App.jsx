@@ -9,7 +9,7 @@ const store = {
 /* ------------------------------------------------------------------ *
  *  伸展夥伴  ·  早晚伸展計時與紀錄
  *  針對：體態改善 / 馬拉松恢復 / 僵直性脊椎炎
- *  功能：引導計時、節拍音、準備間隔、語音報動作、月曆自己打勾
+ *  功能：引導計時、節拍音、準備間隔、語音報動作、自訂間歇計時器
  * ------------------------------------------------------------------ */
 
 /* ---------- 動作線稿圖示（自繪 SVG，隨主題色變色） ---------- */
@@ -84,10 +84,15 @@ const ROUTINES = {
 const THEME = {
   morning: { accent: "#f5a524", soft: "rgba(245,165,36,0.14)", glow: "rgba(245,165,36,0.5)" },
   night: { accent: "#8b93f7", soft: "rgba(139,147,247,0.16)", glow: "rgba(139,147,247,0.5)" },
+  timer: { accent: "#38bdf8", soft: "rgba(56,189,248,0.14)", glow: "rgba(56,189,248,0.5)" },
 };
+const TABS = [
+  { key: "morning", icon: "🌅", label: "早晨" },
+  { key: "night", icon: "🌙", label: "睡前" },
+  { key: "timer", icon: "⏱️", label: "計時器" },
+];
 const BG = "#0c0f16", SURFACE = "#151a24", BORDER = "rgba(255,255,255,0.08)",
   TEXT = "#e7eaf0", MUTED = "#9aa3b5";
-const WD = ["日", "一", "二", "三", "四", "五", "六"];
 
 /* ---------- 工具 ---------- */
 const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -111,13 +116,37 @@ function Toggle({ on, onClick, labelOn, labelOff, accent }) {
   );
 }
 
+function NumberField({ label, value, onChange, min = 0, max = 999, step = 5, suffix = "秒" }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-sm" style={{ color: MUTED }}>{label}</span>
+      <div className="flex items-center gap-2">
+        <button onClick={() => onChange(Math.max(min, value - step))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>−</button>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={value}
+          onChange={(e) => {
+            const digits = e.target.value.replace(/[^0-9]/g, "");
+            if (digits === "") { onChange(min); return; }
+            onChange(Math.min(max, Math.max(min, parseInt(digits, 10))));
+          }}
+          className="w-14 rounded-lg text-center text-sm font-semibold"
+          style={{ border: `1px solid ${BORDER}`, color: TEXT, background: "rgba(255,255,255,0.04)", padding: "4px 0" }}
+        />
+        <span className="w-5 text-xs" style={{ color: MUTED }}>{suffix}</span>
+        <button onClick={() => onChange(Math.min(max, value + step))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>＋</button>
+      </div>
+    </div>
+  );
+}
+
 /* ================================================================== */
 export default function App() {
   const [tab, setTab] = useState("morning");
   const [log, setLog] = useState({});           // 每日各動作打勾（今日清單用）
-  const [days, setDays] = useState({});          // 每日「有做」打勾（月曆／連續天數用）
+  const [days, setDays] = useState({});          // 每日「有做」打勾（連續天數用）
   const [loaded, setLoaded] = useState(false);
-  const [calMonth, setCalMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
 
   // 設定
   const [sound, setSound] = useState(true);
@@ -133,6 +162,17 @@ export default function App() {
   const [paused, setPaused] = useState(false);
   const [flash, setFlash] = useState(null);
   const [finished, setFinished] = useState(null);
+
+  // 計時器（可自訂循環次數、訓練／休息／循環間休息秒數）
+  const [timerCycles, setTimerCycles] = useState(5);
+  const [timerTrainSec, setTimerTrainSec] = useState(30);
+  const [timerRestSec, setTimerRestSec] = useState(15);
+  const [timerCycleRestSec, setTimerCycleRestSec] = useState(30);
+  const [timerSession, setTimerSession] = useState(null); // { phases, idx }
+  const [timerRemaining, setTimerRemaining] = useState(null);
+  const [timerPaused, setTimerPaused] = useState(false);
+  const [timerFinished, setTimerFinished] = useState(false);
+  const timerTickRef = useRef(null);
 
   const audioRef = useRef(null);
   const tickRef = useRef(null);
@@ -154,6 +194,16 @@ export default function App() {
         const s = await store.get("sfc-settings");
         if (s && s.value) { const o = JSON.parse(s.value); if (typeof o.sound === "boolean") setSound(o.sound); if (typeof o.speak === "boolean") setSpeak(o.speak); if (typeof o.restSec === "number") setRestSec(o.restSec); if (typeof o.autoCheck === "boolean") setAutoCheck(o.autoCheck); }
       } catch (e) { }
+      try {
+        const t = await store.get("sfc-timer");
+        if (t && t.value) {
+          const o = JSON.parse(t.value);
+          if (typeof o.cycles === "number") setTimerCycles(o.cycles);
+          if (typeof o.trainSec === "number") setTimerTrainSec(o.trainSec);
+          if (typeof o.restSec === "number") setTimerRestSec(o.restSec);
+          if (typeof o.cycleRestSec === "number") setTimerCycleRestSec(o.cycleRestSec);
+        }
+      } catch (e) { }
       setLoaded(true);
     })();
     try { window.speechSynthesis && window.speechSynthesis.getVoices(); } catch (e) { }
@@ -161,8 +211,9 @@ export default function App() {
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-log", JSON.stringify(log)); } catch (e) { } })(); }, [log, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-days", JSON.stringify(days)); } catch (e) { } })(); }, [days, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ sound, speak, restSec, autoCheck })); } catch (e) { } })(); }, [sound, speak, restSec, autoCheck, loaded]);
+  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-timer", JSON.stringify({ cycles: timerCycles, trainSec: timerTrainSec, restSec: timerRestSec, cycleRestSec: timerCycleRestSec })); } catch (e) { } })(); }, [timerCycles, timerTrainSec, timerRestSec, timerCycleRestSec, loaded]);
 
-  // 做了任一動作 → 今天自動打勾（不會自動取消，取消請點月曆）
+  // 做了任一動作 → 今天自動打勾
   useEffect(() => {
     if (!loaded) return;
     const t = todayStr();
@@ -172,7 +223,6 @@ export default function App() {
   const doneToday = new Set(log[todayStr()] || []);
   function toggle(id) { setLog((p) => { const t = todayStr(), day = new Set(p[t] || []); day.has(id) ? day.delete(id) : day.add(id); return { ...p, [t]: [...day] }; }); }
   function markDone(id) { setLog((p) => { const t = todayStr(), day = new Set(p[t] || []); day.add(id); return { ...p, [t]: [...day] }; }); }
-  function toggleDay(key) { setDays((p) => { const n = { ...p }; if (n[key]) delete n[key]; else n[key] = true; return n; }); }
 
   /* --- 音效 --- */
   function tone(freq = 880, dur = 0.16, gain = 0.28, type = "sine") {
@@ -281,7 +331,69 @@ export default function App() {
   function skip() { stopSpeak(); advance(); }
   function quit() { stopSpeak(); setSession(null); setFlash(null); }
 
-  /* ---------------- 引導全螢幕 ---------------- */
+  /* --- 計時器：產生階段序列（訓練 → 休息，循環間穿插較長休息） --- */
+  function buildTimerPhases(cycles, trainSec, restSec, cycleRestSec) {
+    const phases = [];
+    for (let i = 0; i < cycles; i++) {
+      phases.push({ type: "train", cycle: i + 1, dur: trainSec });
+      if (restSec > 0) phases.push({ type: "rest", cycle: i + 1, dur: restSec });
+      if (i < cycles - 1 && cycleRestSec > 0) phases.push({ type: "cycleRest", cycle: i + 1, dur: cycleRestSec });
+    }
+    return phases;
+  }
+  function startTimer() {
+    try { if (!audioRef.current) audioRef.current = new (window.AudioContext || window.webkitAudioContext)(); if (audioRef.current.state === "suspended") audioRef.current.resume(); } catch (e) { }
+    const phases = buildTimerPhases(timerCycles, timerTrainSec, timerRestSec, timerCycleRestSec);
+    if (!phases.length) return;
+    setTimerFinished(false);
+    setTimerSession({ phases, idx: 0 });
+  }
+  function quitTimer() { stopSpeak(); setTimerSession(null); }
+
+  /* --- 計時器：進入新階段 --- */
+  useEffect(() => {
+    if (!timerSession) return;
+    const ph = timerSession.phases[timerSession.idx];
+    if (!ph) return;
+    setTimerPaused(false);
+    timerTickRef.current = null;
+    setTimerRemaining(ph.dur);
+    tone(ph.type === "train" ? 980 : 620, 0.16, 0.3, "sine");
+    say(ph.type === "train" ? "開始訓練" : ph.type === "rest" ? "休息" : "循環間休息");
+  }, [timerSession && timerSession.idx, !!timerSession]); // eslint-disable-line
+
+  /* --- 計時器：倒數 --- */
+  useEffect(() => {
+    if (!timerSession || timerPaused || timerRemaining === null || timerRemaining <= 0) return;
+    const t = setInterval(() => setTimerRemaining((r) => (r === null ? r : r - 1)), 1000);
+    return () => clearInterval(t);
+  }, [timerSession, timerPaused, timerRemaining]);
+
+  /* --- 計時器：節拍音 --- */
+  useEffect(() => {
+    if (!timerSession || timerPaused || timerRemaining === null || timerRemaining <= 0) return;
+    if (timerTickRef.current === timerRemaining) return;
+    timerTickRef.current = timerRemaining;
+    if (timerRemaining <= 3) tone(1320, 0.09, 0.32, "sine");
+    else tone(720, 0.05, 0.14, "triangle");
+  }, [timerSession, timerPaused, timerRemaining, sound]); // eslint-disable-line
+
+  /* --- 計時器：倒數到 0，推進到下一階段或結束 --- */
+  useEffect(() => {
+    if (!timerSession || timerRemaining !== 0) return;
+    beep(1046, 0.22);
+    const t = setTimeout(() => {
+      setTimerSession((s) => {
+        if (!s) return s;
+        const next = s.idx + 1;
+        if (next >= s.phases.length) { setTimerFinished(true); return null; }
+        return { ...s, idx: next };
+      });
+    }, 450);
+    return () => clearTimeout(t);
+  }, [timerRemaining]); // eslint-disable-line
+
+  /* ---------------- 引導全螢幕（伸展動作） ---------------- */
   if (session && curEx) {
     const list = ROUTINES[session.routine].exercises;
     const Pose = POSE[curEx.pose];
@@ -360,7 +472,7 @@ export default function App() {
     );
   }
 
-  /* ---------------- 完成畫面 ---------------- */
+  /* ---------------- 完成畫面（伸展） ---------------- */
   if (finished) {
     const th = THEME[finished];
     return (
@@ -379,20 +491,74 @@ export default function App() {
     );
   }
 
-  /* ---------------- 主畫面 ---------------- */
-  const routine = ROUTINES[tab];
-  const doneCount = routine.exercises.filter((e) => doneToday.has(e.id)).length;
-  const totalEx = routine.exercises.length;
-  const streak = calcStreak(days);
+  /* ---------------- 計時器全螢幕 ---------------- */
+  if (timerSession) {
+    const ph = timerSession.phases[timerSession.idx];
+    const th = THEME.timer;
+    const R = 52, C = 2 * Math.PI * R;
+    const prog = timerRemaining !== null ? timerRemaining / ph.dur : 0;
+    const phaseLabel = ph.type === "train" ? "訓練" : ph.type === "rest" ? "休息" : "循環間休息";
+    const phaseColor = ph.type === "train" ? th.accent : MUTED;
 
-  // 月曆
-  const y = calMonth.getFullYear(), m = calMonth.getMonth();
-  const firstDow = new Date(y, m, 1).getDay();
-  const daysInMonth = new Date(y, m + 1, 0).getDate();
-  const cells = [...Array(firstDow).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
-  const todayMid = new Date(); todayMid.setHours(0, 0, 0, 0);
-  const nowM = new Date(); const canNext = (y < nowM.getFullYear()) || (y === nowM.getFullYear() && m < nowM.getMonth());
-  const monthDone = cells.filter((n) => n && days[fmt(new Date(y, m, n))]).length;
+    return (
+      <div style={{ background: BG, color: TEXT, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif" }}>
+        <div className="mx-auto flex flex-col items-center px-6 py-6" style={{ maxWidth: 520, minHeight: "100vh" }}>
+          <div className="flex w-full items-center justify-between" style={{ color: MUTED }}>
+            <span className="text-sm">⏱️ 計時器　第 {ph.cycle} / {timerCycles} 輪</span>
+          </div>
+
+          <div className="mt-2 h-1 w-full rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
+            <div className="h-1 rounded-full transition-all" style={{ width: `${(timerSession.idx / timerSession.phases.length) * 100}%`, background: th.accent }} />
+          </div>
+
+          <div className="mt-10 rounded-full px-5 py-1.5 text-base font-semibold" style={{ background: ph.type === "train" ? th.soft : "rgba(255,255,255,0.06)", color: phaseColor }}>{phaseLabel}</div>
+
+          <div className="relative mt-8 flex items-center justify-center" style={{ width: 240, height: 240 }}>
+            <svg width="240" height="240" className="-rotate-90">
+              <circle cx="120" cy="120" r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="10" />
+              <circle cx="120" cy="120" r={R} fill="none" stroke={phaseColor} strokeWidth="10" strokeLinecap="round"
+                strokeDasharray={C} strokeDashoffset={C * (1 - prog)} style={{ transition: "stroke-dashoffset 1s linear", filter: `drop-shadow(0 0 6px ${th.glow})` }} />
+            </svg>
+            <div className="absolute flex flex-col items-center">
+              <span style={{ fontSize: 58, fontWeight: 700, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{fmtClock(timerRemaining ?? 0)}</span>
+            </div>
+          </div>
+
+          <div className="mt-auto flex w-full items-center justify-center gap-5 pt-8">
+            <button onClick={() => setSpeak((s) => !s)} className="text-sm" style={{ color: speak ? th.accent : MUTED }}>{speak ? "🗣 語音" : "🔇 語音"}</button>
+            <button onClick={() => setSound((s) => !s)} className="text-sm" style={{ color: sound ? th.accent : MUTED }}>{sound ? "🔊 節拍" : "🔈 節拍"}</button>
+            <button onClick={quitTimer} className="text-sm" style={{ color: MUTED }}>結束 ✕</button>
+          </div>
+
+          <div className="mt-4 flex w-full items-center justify-center gap-3 pb-2">
+            <button onClick={() => setTimerPaused((p) => !p)} className="flex-1 rounded-xl px-4 py-3 text-base font-semibold" style={{ background: th.accent, color: "#0c0f16" }}>{timerPaused ? "▶ 繼續" : "❙❙ 暫停"}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------------- 完成畫面（計時器） ---------------- */
+  if (timerFinished) {
+    const th = THEME.timer;
+    return (
+      <div style={{ background: BG, color: TEXT, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif" }}>
+        <div className="mx-auto flex flex-col items-center justify-center px-6" style={{ maxWidth: 520, minHeight: "100vh" }}>
+          <div className="text-6xl">⏱️</div>
+          <h2 className="mt-4 text-2xl font-bold">計時結束</h2>
+          <p className="mt-2 text-center" style={{ color: MUTED }}>完成 {timerCycles} 輪循環，做得好！</p>
+          <button onClick={() => setTimerFinished(false)} className="mt-8 rounded-xl px-6 py-3 font-semibold" style={{ background: th.accent, color: "#0c0f16" }}>回到主畫面</button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------------- 主畫面 ---------------- */
+  const routine = ROUTINES[tab]; // 計時器分頁沒有對應的 routine
+  const doneCount = routine ? routine.exercises.filter((e) => doneToday.has(e.id)).length : 0;
+  const totalEx = routine ? routine.exercises.length : 0;
+  const streak = calcStreak(days);
+  const timerTotalSec = timerCycles * timerTrainSec + timerCycles * timerRestSec + Math.max(0, timerCycles - 1) * timerCycleRestSec;
 
   return (
     <div style={{ background: BG, color: TEXT, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif" }}>
@@ -408,112 +574,97 @@ export default function App() {
           </div>
         </div>
 
-        {/* 月曆：自己點日期打勾 */}
-        <div className="mt-4 rounded-2xl p-4" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-          <div className="flex items-center justify-between">
-            <button onClick={() => setCalMonth(new Date(y, m - 1, 1))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ color: MUTED, background: "rgba(255,255,255,0.05)" }}>‹</button>
-            <span className="text-sm font-semibold">{y} 年 {m + 1} 月　<span style={{ color: MUTED, fontWeight: 400 }}>本月 {monthDone} 天</span></span>
-            <button onClick={() => canNext && setCalMonth(new Date(y, m + 1, 1))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ color: canNext ? MUTED : "rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)" }}>›</button>
-          </div>
-          <div className="mt-3 grid grid-cols-7 gap-1.5">
-            {WD.map((w, i) => <div key={i} className="text-center text-[11px]" style={{ color: i === 0 || i === 6 ? theme.accent : MUTED }}>{w}</div>)}
-            {cells.map((n, i) => {
-              if (!n) return <div key={i} />;
-              const dateObj = new Date(y, m, n);
-              const key = fmt(dateObj);
-              const done = !!days[key];
-              const isToday = key === todayStr();
-              const isFuture = dateObj > todayMid;
-              return (
-                <button key={i} disabled={isFuture} onClick={() => toggleDay(key)}
-                  className="flex items-center justify-center rounded-lg text-sm transition-all"
-                  style={{
-                    aspectRatio: "1 / 1",
-                    fontWeight: done ? 700 : 400,
-                    background: done ? theme.accent : "rgba(255,255,255,0.04)",
-                    color: done ? "#0c0f16" : (isFuture ? "rgba(255,255,255,0.18)" : TEXT),
-                    border: isToday ? `1.5px solid ${done ? "#0c0f16" : theme.accent}` : "1.5px solid transparent",
-                    boxShadow: done ? `0 0 8px ${theme.glow}` : "none",
-                  }}>
-                  {n}
-                </button>
-              );
-            })}
-          </div>
-          <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>點日期即可自己打勾／取消 · 做完動作會自動幫今天打勾</div>
-        </div>
-
         {/* 分頁 */}
-        <div className="mt-5 grid grid-cols-2 gap-2 rounded-2xl p-1" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-          {["morning", "night"].map((k) => (
-            <button key={k} onClick={() => setTab(k)} className="rounded-xl py-2.5 text-sm font-semibold transition-all"
-              style={tab === k ? { background: THEME[k].accent, color: "#0c0f16" } : { color: MUTED, background: "transparent" }}>
-              {ROUTINES[k].icon} {ROUTINES[k].label}
+        <div className="mt-5 grid grid-cols-3 gap-2 rounded-2xl p-1" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+          {TABS.map((t) => (
+            <button key={t.key} onClick={() => setTab(t.key)} className="rounded-xl py-2.5 text-sm font-semibold transition-all"
+              style={tab === t.key ? { background: THEME[t.key].accent, color: "#0c0f16" } : { color: MUTED, background: "transparent" }}>
+              {t.icon} {t.label}
             </button>
           ))}
         </div>
 
-        {/* 設定 */}
-        <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-          <div className="flex items-center justify-between">
-            <span className="text-sm" style={{ color: MUTED }}>換動作間隔</span>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setRestSec((v) => Math.max(0, v - 1))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>−</button>
-              <span className="w-14 text-center text-sm font-semibold">{restSec} 秒</span>
-              <button onClick={() => setRestSec((v) => Math.min(10, v + 1))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>＋</button>
+        {tab === "timer" ? (
+          <>
+            {/* 計時器設定 */}
+            <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+              <div className="mb-3 text-sm font-semibold">計時器設定</div>
+              <div className="flex flex-col gap-3">
+                <NumberField label="循環次數" value={timerCycles} onChange={setTimerCycles} min={1} max={50} step={1} suffix="輪" />
+                <NumberField label="訓練時間" value={timerTrainSec} onChange={setTimerTrainSec} min={5} max={1800} step={5} suffix="秒" />
+                <NumberField label="休息時間" value={timerRestSec} onChange={setTimerRestSec} min={0} max={600} step={5} suffix="秒" />
+                <NumberField label="循環間休息" value={timerCycleRestSec} onChange={setTimerCycleRestSec} min={0} max={600} step={5} suffix="秒" />
+              </div>
+              <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(timerTotalSec)}</div>
             </div>
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <span className="text-sm" style={{ color: MUTED }}>念出提示詞</span>
-            <Toggle on={speak} onClick={() => setSpeak((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <span className="text-sm" style={{ color: MUTED }}>節拍音</span>
-            <Toggle on={sound} onClick={() => setSound((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <span className="text-sm" style={{ color: MUTED }}>完成自動打勾</span>
-            <Toggle on={autoCheck} onClick={() => setAutoCheck((v) => !v)} labelOn="開" labelOff="關" accent={theme.accent} />
-          </div>
-        </div>
 
-        {/* 進度 + 開始 */}
-        <div className="mt-4 flex items-center justify-between">
-          <div>
-            <div className="text-sm" style={{ color: MUTED }}>{routine.tag}</div>
-            <div className="mt-0.5 text-lg font-semibold">今日 {doneCount} / {totalEx} 完成</div>
-          </div>
-          <button onClick={() => start(tab, 0)} className="rounded-xl px-5 py-3 text-base font-bold" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始整組</button>
-        </div>
-
-        {/* 動作清單 */}
-        <div className="mt-4 flex flex-col gap-2.5">
-          {routine.exercises.map((ex, i) => {
-            const Pose = POSE[ex.pose];
-            const done = doneToday.has(ex.id);
-            const meta = ex.mode === "time" ? `${ex.sec} 秒${ex.sides === 2 ? " · 左右各" : ""}` : ex.reps;
-            return (
-              <div key={ex.id} className="flex items-center gap-3 rounded-2xl p-3" style={{ background: SURFACE, border: `1px solid ${done ? theme.accent : BORDER}` }}>
-                <div className="flex shrink-0 items-center justify-center rounded-xl" style={{ width: 66, height: 50, background: theme.soft, color: theme.accent }}><Pose /></div>
-                <div className="min-w-0 flex-1">
-                  <span className="truncate text-[15px] font-semibold">{ex.name}</span>
-                  <p className="mt-0.5 line-clamp-2 text-xs leading-snug" style={{ color: MUTED }}>{ex.cue}</p>
-                  <span className="mt-1 inline-block rounded-md px-2 py-0.5 text-[11px]" style={{ background: "rgba(255,255,255,0.05)", color: MUTED }}>{meta}</span>
-                </div>
-                <div className="flex shrink-0 flex-col items-center gap-2">
-                  <button onClick={() => start(tab, i)} title="從這個動作開始" className="flex h-9 w-9 items-center justify-center rounded-full text-sm" style={{ background: "rgba(255,255,255,0.06)", color: theme.accent }}>▶</button>
-                  <button onClick={() => toggle(ex.id)} className="flex h-9 w-9 items-center justify-center rounded-full text-base font-bold transition-all"
-                    style={done ? { background: theme.accent, color: "#0c0f16" } : { background: "transparent", color: MUTED, border: `2px solid ${BORDER}` }}>✓</button>
+            <button onClick={startTimer} className="mt-4 w-full rounded-xl px-5 py-3 text-base font-bold" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始計時</button>
+          </>
+        ) : (
+          <>
+            {/* 設定 */}
+            <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+              <div className="flex items-center justify-between">
+                <span className="text-sm" style={{ color: MUTED }}>換動作間隔</span>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setRestSec((v) => Math.max(0, v - 1))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>−</button>
+                  <span className="w-14 text-center text-sm font-semibold">{restSec} 秒</span>
+                  <button onClick={() => setRestSec((v) => Math.min(10, v + 1))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>＋</button>
                 </div>
               </div>
-            );
-          })}
-        </div>
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-sm" style={{ color: MUTED }}>念出提示詞</span>
+                <Toggle on={speak} onClick={() => setSpeak((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
+              </div>
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-sm" style={{ color: MUTED }}>節拍音</span>
+                <Toggle on={sound} onClick={() => setSound((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
+              </div>
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-sm" style={{ color: MUTED }}>完成自動打勾</span>
+                <Toggle on={autoCheck} onClick={() => setAutoCheck((v) => !v)} labelOn="開" labelOff="關" accent={theme.accent} />
+              </div>
+            </div>
 
-        <div className="mt-5 rounded-2xl p-4 text-xs leading-relaxed" style={{ background: "rgba(255,255,255,0.03)", border: `1px dashed ${BORDER}`, color: MUTED }}>
-          <div className="mb-1 font-semibold" style={{ color: TEXT }}>安全提醒</div>
-          溫和、規律勝過強度，拉到有伸展感即可、不拉到痛。發炎期（flare）降低強度，以呼吸與活動度為主，避免強力後仰與負重扭轉。個別狀況請與醫師或物理治療師確認。
-        </div>
+            {/* 進度 + 開始 */}
+            <div className="mt-4 flex items-center justify-between">
+              <div>
+                <div className="text-sm" style={{ color: MUTED }}>{routine.tag}</div>
+                <div className="mt-0.5 text-lg font-semibold">今日 {doneCount} / {totalEx} 完成</div>
+              </div>
+              <button onClick={() => start(tab, 0)} className="rounded-xl px-5 py-3 text-base font-bold" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始整組</button>
+            </div>
+
+            {/* 動作清單 */}
+            <div className="mt-4 flex flex-col gap-2.5">
+              {routine.exercises.map((ex, i) => {
+                const Pose = POSE[ex.pose];
+                const done = doneToday.has(ex.id);
+                const meta = ex.mode === "time" ? `${ex.sec} 秒${ex.sides === 2 ? " · 左右各" : ""}` : ex.reps;
+                return (
+                  <div key={ex.id} className="flex items-center gap-3 rounded-2xl p-3" style={{ background: SURFACE, border: `1px solid ${done ? theme.accent : BORDER}` }}>
+                    <div className="flex shrink-0 items-center justify-center rounded-xl" style={{ width: 66, height: 50, background: theme.soft, color: theme.accent }}><Pose /></div>
+                    <div className="min-w-0 flex-1">
+                      <span className="truncate text-[15px] font-semibold">{ex.name}</span>
+                      <p className="mt-0.5 line-clamp-2 text-xs leading-snug" style={{ color: MUTED }}>{ex.cue}</p>
+                      <span className="mt-1 inline-block rounded-md px-2 py-0.5 text-[11px]" style={{ background: "rgba(255,255,255,0.05)", color: MUTED }}>{meta}</span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-center gap-2">
+                      <button onClick={() => start(tab, i)} title="從這個動作開始" className="flex h-9 w-9 items-center justify-center rounded-full text-sm" style={{ background: "rgba(255,255,255,0.06)", color: theme.accent }}>▶</button>
+                      <button onClick={() => toggle(ex.id)} className="flex h-9 w-9 items-center justify-center rounded-full text-base font-bold transition-all"
+                        style={done ? { background: theme.accent, color: "#0c0f16" } : { background: "transparent", color: MUTED, border: `2px solid ${BORDER}` }}>✓</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-5 rounded-2xl p-4 text-xs leading-relaxed" style={{ background: "rgba(255,255,255,0.03)", border: `1px dashed ${BORDER}`, color: MUTED }}>
+              <div className="mb-1 font-semibold" style={{ color: TEXT }}>安全提醒</div>
+              溫和、規律勝過強度，拉到有伸展感即可、不拉到痛。發炎期（flare）降低強度，以呼吸與活動度為主，避免強力後仰與負重扭轉。個別狀況請與醫師或物理治療師確認。
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
