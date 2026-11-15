@@ -91,6 +91,12 @@ const TABS = [
   { key: "night", icon: "🌙", label: "睡前" },
   { key: "timer", icon: "⏱️", label: "計時器" },
 ];
+const PHASE_LABEL = { train: "訓練", rest: "休息", cycleRest: "循環間休息" };
+const PHASE_COLOR = {
+  train: { bg: "#8BE62B", fg: "#10210a" },
+  rest: { bg: "#FF4747", fg: "#2a0000" },
+  cycleRest: { bg: "#3b82f6", fg: "#071226" },
+};
 const BG = "#0c0f16", SURFACE = "#151a24", BORDER = "rgba(255,255,255,0.08)",
   TEXT = "#e7eaf0", MUTED = "#9aa3b5";
 
@@ -120,8 +126,8 @@ function NumberField({ label, value, onChange, min = 0, max = 999, step = 5, suf
   return (
     <div className="flex items-center justify-between">
       <span className="text-sm" style={{ color: MUTED }}>{label}</span>
-      <div className="flex items-center gap-2">
-        <button onClick={() => onChange(Math.max(min, value - step))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>−</button>
+      <div className="flex items-center gap-2.5">
+        <button onClick={() => onChange(Math.max(min, value - step))} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>−</button>
         <input
           type="text"
           inputMode="numeric"
@@ -131,11 +137,11 @@ function NumberField({ label, value, onChange, min = 0, max = 999, step = 5, suf
             if (digits === "") { onChange(min); return; }
             onChange(Math.min(max, Math.max(min, parseInt(digits, 10))));
           }}
-          className="w-14 rounded-lg text-center text-sm font-semibold"
-          style={{ border: `1px solid ${BORDER}`, color: TEXT, background: "rgba(255,255,255,0.04)", padding: "4px 0" }}
+          className="w-16 rounded-lg text-center text-base font-bold"
+          style={{ border: `1px solid ${BORDER}`, color: TEXT, background: "rgba(255,255,255,0.04)", padding: "6px 0" }}
         />
-        <span className="w-5 text-xs" style={{ color: MUTED }}>{suffix}</span>
-        <button onClick={() => onChange(Math.min(max, value + step))} className="flex h-8 w-8 items-center justify-center rounded-full text-lg" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>＋</button>
+        <span className="w-6 text-xs" style={{ color: MUTED }}>{suffix}</span>
+        <button onClick={() => onChange(Math.min(max, value + step))} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(255,255,255,0.06)", color: TEXT }}>＋</button>
       </div>
     </div>
   );
@@ -240,6 +246,10 @@ export default function App() {
     } catch (e) { }
   }
   const beep = (f = 880, d = 0.18) => tone(f, d, 0.3, "sine");
+  // 震動提醒（不受手機靜音開關影響，iOS Safari 不支援此 API 會自動略過）
+  function vibrate(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { } }
+  // 較誇張的提示音（雙音、方波、音量加大），用於計時器階段切換
+  function alertTone() { tone(880, 0.12, 0.55, "square"); setTimeout(() => tone(1320, 0.18, 0.55, "square"), 130); }
 
   /* --- 語音 --- */
   function say(text) {
@@ -349,6 +359,15 @@ export default function App() {
     setTimerSession({ phases, idx: 0 });
   }
   function quitTimer() { stopSpeak(); setTimerSession(null); }
+  function skipTimerPhase() {
+    stopSpeak();
+    setTimerSession((s) => {
+      if (!s) return s;
+      const next = s.idx + 1;
+      if (next >= s.phases.length) { setTimerFinished(true); return null; }
+      return { ...s, idx: next };
+    });
+  }
 
   /* --- 計時器：進入新階段 --- */
   useEffect(() => {
@@ -358,7 +377,8 @@ export default function App() {
     setTimerPaused(false);
     timerTickRef.current = null;
     setTimerRemaining(ph.dur);
-    tone(ph.type === "train" ? 980 : 620, 0.16, 0.3, "sine");
+    alertTone();
+    vibrate(ph.type === "train" ? [120, 60, 120] : [250]);
     say(ph.type === "train" ? "開始訓練" : ph.type === "rest" ? "休息" : "循環間休息");
   }, [timerSession && timerSession.idx, !!timerSession]); // eslint-disable-line
 
@@ -374,14 +394,15 @@ export default function App() {
     if (!timerSession || timerPaused || timerRemaining === null || timerRemaining <= 0) return;
     if (timerTickRef.current === timerRemaining) return;
     timerTickRef.current = timerRemaining;
-    if (timerRemaining <= 3) tone(1320, 0.09, 0.32, "sine");
+    if (timerRemaining <= 3) { tone(1320, 0.1, 0.45, "square"); vibrate(50); }
     else tone(720, 0.05, 0.14, "triangle");
   }, [timerSession, timerPaused, timerRemaining, sound]); // eslint-disable-line
 
   /* --- 計時器：倒數到 0，推進到下一階段或結束 --- */
   useEffect(() => {
     if (!timerSession || timerRemaining !== 0) return;
-    beep(1046, 0.22);
+    alertTone();
+    vibrate([150, 80, 150]);
     const t = setTimeout(() => {
       setTimerSession((s) => {
         if (!s) return s;
@@ -491,47 +512,48 @@ export default function App() {
     );
   }
 
-  /* ---------------- 計時器全螢幕 ---------------- */
+  /* ---------------- 計時器全螢幕（大色塊 + 大按鈕） ---------------- */
   if (timerSession) {
     const ph = timerSession.phases[timerSession.idx];
-    const th = THEME.timer;
-    const R = 52, C = 2 * Math.PI * R;
-    const prog = timerRemaining !== null ? timerRemaining / ph.dur : 0;
-    const phaseLabel = ph.type === "train" ? "訓練" : ph.type === "rest" ? "休息" : "循環間休息";
-    const phaseColor = ph.type === "train" ? th.accent : MUTED;
+    const nextPh = timerSession.phases[timerSession.idx + 1] || null;
+    const pc = PHASE_COLOR[ph.type];
+    const roundsLeft = timerCycles - ph.cycle + 1;
 
     return (
-      <div style={{ background: BG, color: TEXT, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif" }}>
-        <div className="mx-auto flex flex-col items-center px-6 py-6" style={{ maxWidth: 520, minHeight: "100vh" }}>
-          <div className="flex w-full items-center justify-between" style={{ color: MUTED }}>
-            <span className="text-sm">⏱️ 計時器　第 {ph.cycle} / {timerCycles} 輪</span>
-          </div>
-
-          <div className="mt-2 h-1 w-full rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
-            <div className="h-1 rounded-full transition-all" style={{ width: `${(timerSession.idx / timerSession.phases.length) * 100}%`, background: th.accent }} />
-          </div>
-
-          <div className="mt-10 rounded-full px-5 py-1.5 text-base font-semibold" style={{ background: ph.type === "train" ? th.soft : "rgba(255,255,255,0.06)", color: phaseColor }}>{phaseLabel}</div>
-
-          <div className="relative mt-8 flex items-center justify-center" style={{ width: 240, height: 240 }}>
-            <svg width="240" height="240" className="-rotate-90">
-              <circle cx="120" cy="120" r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="10" />
-              <circle cx="120" cy="120" r={R} fill="none" stroke={phaseColor} strokeWidth="10" strokeLinecap="round"
-                strokeDasharray={C} strokeDashoffset={C * (1 - prog)} style={{ transition: "stroke-dashoffset 1s linear", filter: `drop-shadow(0 0 6px ${th.glow})` }} />
-            </svg>
-            <div className="absolute flex flex-col items-center">
-              <span style={{ fontSize: 58, fontWeight: 700, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{fmtClock(timerRemaining ?? 0)}</span>
+      <div style={{ background: pc.bg, color: pc.fg, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif", transition: "background 0.3s" }}>
+        <div className="mx-auto flex flex-col" style={{ maxWidth: 520, minHeight: "100vh" }}>
+          <div className="flex items-center justify-between px-5 pt-5">
+            <span className="text-base font-bold" style={{ opacity: 0.8 }}>第 {ph.cycle} / {timerCycles} 輪</span>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setSound((s) => !s)} className="flex h-11 w-11 items-center justify-center rounded-full text-xl" style={{ background: "rgba(0,0,0,0.15)" }}>{sound ? "🔊" : "🔈"}</button>
+              <button onClick={quitTimer} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(0,0,0,0.15)" }}>✕</button>
             </div>
           </div>
 
-          <div className="mt-auto flex w-full items-center justify-center gap-5 pt-8">
-            <button onClick={() => setSpeak((s) => !s)} className="text-sm" style={{ color: speak ? th.accent : MUTED }}>{speak ? "🗣 語音" : "🔇 語音"}</button>
-            <button onClick={() => setSound((s) => !s)} className="text-sm" style={{ color: sound ? th.accent : MUTED }}>{sound ? "🔊 節拍" : "🔈 節拍"}</button>
-            <button onClick={quitTimer} className="text-sm" style={{ color: MUTED }}>結束 ✕</button>
+          <div className="flex flex-1 flex-col items-center justify-center px-6">
+            <div className="text-3xl font-black tracking-widest" style={{ opacity: 0.85 }}>{PHASE_LABEL[ph.type]}</div>
+            <div style={{ fontSize: 112, fontWeight: 900, fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: -2 }}>{fmtClock(timerRemaining ?? 0)}</div>
           </div>
 
-          <div className="mt-4 flex w-full items-center justify-center gap-3 pb-2">
-            <button onClick={() => setTimerPaused((p) => !p)} className="flex-1 rounded-xl px-4 py-3 text-base font-semibold" style={{ background: th.accent, color: "#0c0f16" }}>{timerPaused ? "▶ 繼續" : "❙❙ 暫停"}</button>
+          {nextPh && (
+            <div className="flex items-center justify-center py-4" style={{ background: PHASE_COLOR[nextPh.type].bg, color: PHASE_COLOR[nextPh.type].fg }}>
+              <span className="text-lg font-bold tracking-wide">接下來：{PHASE_LABEL[nextPh.type]}　{fmtClock(nextPh.dur)}</span>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between px-6 py-7" style={{ background: "rgba(0,0,0,0.12)" }}>
+            <div className="flex flex-col items-center" style={{ width: 80 }}>
+              <span className="text-5xl font-black">{roundsLeft}</span>
+              <span className="text-sm font-bold" style={{ opacity: 0.75 }}>循環剩餘</span>
+            </div>
+            <button onClick={() => setTimerPaused((p) => !p)} className="flex items-center justify-center rounded-full text-4xl font-bold"
+              style={{ width: 104, height: 104, background: pc.fg, color: pc.bg, boxShadow: "0 6px 20px rgba(0,0,0,0.3)" }}>
+              {timerPaused ? "▶" : "❙❙"}
+            </button>
+            <button onClick={skipTimerPhase} className="flex flex-col items-center" style={{ width: 80 }}>
+              <span className="text-4xl font-black">⏭</span>
+              <span className="text-sm font-bold" style={{ opacity: 0.75 }}>跳過</span>
+            </button>
           </div>
         </div>
       </div>
@@ -598,7 +620,7 @@ export default function App() {
               <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(timerTotalSec)}</div>
             </div>
 
-            <button onClick={startTimer} className="mt-4 w-full rounded-xl px-5 py-3 text-base font-bold" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始計時</button>
+            <button onClick={startTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始計時</button>
           </>
         ) : (
           <>
