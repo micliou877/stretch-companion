@@ -122,6 +122,25 @@ function Toggle({ on, onClick, labelOn, labelOff, accent }) {
   );
 }
 
+function VolumeSlider({ value, onChange, accent }) {
+  const pct = Math.round(value * 100);
+  return (
+    <div className="flex flex-1 items-center gap-3">
+      <span style={{ fontSize: 20 }}>{pct <= 0 ? "🔈" : pct < 50 ? "🔉" : "🔊"}</span>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={pct}
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+        className="flex-1"
+        style={{ accentColor: accent }}
+      />
+      <span className="w-10 shrink-0 text-right text-xs font-semibold" style={{ color: MUTED }}>{pct}%</span>
+    </div>
+  );
+}
+
 function NumberField({ label, value, onChange, min = 0, max = 999, step = 5, suffix = "秒" }) {
   return (
     <div className="flex items-center justify-between">
@@ -155,7 +174,8 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
 
   // 設定
-  const [sound, setSound] = useState(true);
+  const [volume, setVolume] = useState(0.8);
+  const lastVolumeRef = useRef(0.8);
   const [speak, setSpeak] = useState(true);
   const [restSec, setRestSec] = useState(2);
   const [autoCheck, setAutoCheck] = useState(false);
@@ -212,7 +232,14 @@ export default function App() {
       setDays({ ...derived, ...pDays }); // 舊有動作紀錄自動轉成當日打勾
       try {
         const s = await store.get("sfc-settings");
-        if (s && s.value) { const o = JSON.parse(s.value); if (typeof o.sound === "boolean") setSound(o.sound); if (typeof o.speak === "boolean") setSpeak(o.speak); if (typeof o.restSec === "number") setRestSec(o.restSec); if (typeof o.autoCheck === "boolean") setAutoCheck(o.autoCheck); }
+        if (s && s.value) {
+          const o = JSON.parse(s.value);
+          if (typeof o.volume === "number") setVolume(o.volume);
+          else if (typeof o.sound === "boolean") setVolume(o.sound ? 0.8 : 0);
+          if (typeof o.speak === "boolean") setSpeak(o.speak);
+          if (typeof o.restSec === "number") setRestSec(o.restSec);
+          if (typeof o.autoCheck === "boolean") setAutoCheck(o.autoCheck);
+        }
       } catch (e) { }
       try {
         const t = await store.get("sfc-timer");
@@ -240,7 +267,7 @@ export default function App() {
   }, []);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-log", JSON.stringify(log)); } catch (e) { } })(); }, [log, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-days", JSON.stringify(days)); } catch (e) { } })(); }, [days, loaded]);
-  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ sound, speak, restSec, autoCheck })); } catch (e) { } })(); }, [sound, speak, restSec, autoCheck, loaded]);
+  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ volume, speak, restSec, autoCheck })); } catch (e) { } })(); }, [volume, speak, restSec, autoCheck, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-timer", JSON.stringify({ sets: timerSets, cycles: timerCycles, trainSec: timerTrainSec, restSec: timerRestSec, setRestSec: timerSetRestSec })); } catch (e) { } })(); }, [timerSets, timerCycles, timerTrainSec, timerRestSec, timerSetRestSec, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-custom", JSON.stringify({ steps: customSteps, groups: customGroups, groupRestSec: customGroupRestSec })); } catch (e) { } })(); }, [customSteps, customGroups, customGroupRestSec, loaded]);
 
@@ -257,7 +284,7 @@ export default function App() {
 
   /* --- 音效 --- */
   function tone(freq = 880, dur = 0.16, gain = 0.28, type = "sine") {
-    if (!sound) return;
+    if (volume <= 0) return;
     try {
       if (!audioRef.current) audioRef.current = new (window.AudioContext || window.webkitAudioContext)();
       const ctx = audioRef.current;
@@ -265,7 +292,7 @@ export default function App() {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.type = type; o.frequency.value = freq; o.connect(g); g.connect(ctx.destination);
       g.gain.setValueAtTime(0.0001, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(gain, ctx.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(gain * volume, ctx.currentTime + 0.01);
       g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
       o.start(); o.stop(ctx.currentTime + dur + 0.03);
     } catch (e) { }
@@ -275,6 +302,13 @@ export default function App() {
   function vibrate(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { } }
   // 較誇張的提示音（雙音、方波、音量加大），用於計時器階段切換
   function alertTone() { tone(880, 0.12, 0.55, "square"); setTimeout(() => tone(1320, 0.18, 0.55, "square"), 130); }
+  // 快速靜音/取消靜音（記住上次音量，供全螢幕畫面的喇叭鈕使用）
+  function toggleMute() {
+    setVolume((v) => {
+      if (v > 0) { lastVolumeRef.current = v; return 0; }
+      return lastVolumeRef.current || 0.8;
+    });
+  }
 
   /* --- 語音 --- */
   function say(text) {
@@ -330,7 +364,7 @@ export default function App() {
     tickRef.current = remaining;
     if (remaining <= 3) tone(1320, 0.09, 0.32, "sine");
     else tone(720, 0.05, 0.18, "triangle");
-  }, [session, curEx, phase, remaining, paused, flash, sound]); // eslint-disable-line
+  }, [session, curEx, phase, remaining, paused, flash, volume]); // eslint-disable-line
 
   /* --- 倒數到 0：換邊或完成 --- */
   useEffect(() => {
@@ -445,7 +479,7 @@ export default function App() {
     timerTickRef.current = timerRemaining;
     if (timerRemaining <= 5) { tone(1480, 0.12, 0.5, "square"); vibrate(60); } // 最後 5 秒：高音＋震動，明顯不同
     else { tone(880, 0.09, 0.32, "sine"); } // 每秒蜂鳴
-  }, [timerSession, timerPaused, timerRemaining, sound]); // eslint-disable-line
+  }, [timerSession, timerPaused, timerRemaining, volume]); // eslint-disable-line
 
   /* --- 計時器：倒數到 0，推進到下一階段或結束 --- */
   useEffect(() => {
@@ -523,7 +557,7 @@ export default function App() {
 
           <div className="mt-auto flex w-full items-center justify-center gap-5 pt-8">
             <button onClick={() => setSpeak((s) => !s)} className="text-sm" style={{ color: speak ? theme.accent : MUTED }}>{speak ? "🗣 語音" : "🔇 語音"}</button>
-            <button onClick={() => setSound((s) => !s)} className="text-sm" style={{ color: sound ? theme.accent : MUTED }}>{sound ? "🔊 節拍" : "🔈 節拍"}</button>
+            <button onClick={toggleMute} className="text-sm" style={{ color: volume > 0 ? theme.accent : MUTED }}>{volume > 0 ? "🔊 節拍" : "🔈 節拍"}</button>
             <button onClick={quit} className="text-sm" style={{ color: MUTED }}>結束 ✕</button>
           </div>
 
@@ -577,7 +611,7 @@ export default function App() {
               {timerSession.cyclesPerSet > 1 && <>　循環 {ph.cycle} / {timerSession.cyclesPerSet}</>}
             </span>
             <div className="flex items-center gap-3">
-              <button onClick={() => setSound((s) => !s)} className="flex h-11 w-11 items-center justify-center rounded-full text-xl" style={{ background: "rgba(0,0,0,0.15)" }}>{sound ? "🔊" : "🔈"}</button>
+              <button onClick={toggleMute} className="flex h-11 w-11 items-center justify-center rounded-full text-xl" style={{ background: "rgba(0,0,0,0.15)" }}>{volume > 0 ? "🔊" : "🔈"}</button>
               <button onClick={quitTimer} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(0,0,0,0.15)" }}>✕</button>
             </div>
           </div>
@@ -746,9 +780,9 @@ export default function App() {
                 <span className="text-sm" style={{ color: MUTED }}>念出提示詞</span>
                 <Toggle on={speak} onClick={() => setSpeak((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
               </div>
-              <div className="mt-3 flex items-center justify-between">
-                <span className="text-sm" style={{ color: MUTED }}>節拍音</span>
-                <Toggle on={sound} onClick={() => setSound((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <span className="shrink-0 text-sm" style={{ color: MUTED }}>節拍音量</span>
+                <VolumeSlider value={volume} onChange={setVolume} accent={theme.accent} />
               </div>
               <div className="mt-3 flex items-center justify-between">
                 <span className="text-sm" style={{ color: MUTED }}>完成自動打勾</span>
