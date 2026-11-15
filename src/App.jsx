@@ -331,16 +331,16 @@ export default function App() {
   }
   const stopSpeak = () => { try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) { } };
 
-  // 用語音唸出倒數數字（不受「念出提示詞」開關影響，只看音量）
+  // 用語音合成出「蜂鳴聲」（不受「念出提示詞」開關影響，只看音量）
   // iPhone 靜音開關只會讓 Web Audio／<audio> 靜音，但 Safari 的語音合成不受影響，
-  // 所以最後倒數改用「唸數字」，手機靜音時也聽得到。
-  function countdownSpeak(n) {
+  // 所以蜂鳴聲改用語音唸短音／數字，手機靜音時也聽得到。
+  function voiceBeep(text, rate = 1.3, pitch = 1) {
     if (volume <= 0) return;
     try {
       const synth = window.speechSynthesis; if (!synth) return;
       synth.cancel();
-      const u = new SpeechSynthesisUtterance(String(n));
-      u.lang = "zh-TW"; u.rate = 1.15; u.volume = 1;
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "zh-TW"; u.rate = rate; u.pitch = pitch; u.volume = 1;
       const vs = synth.getVoices();
       const zh = vs.find((v) => /zh[-_]?TW/i.test(v.lang)) || vs.find((v) => /zh[-_]?(HK|CN)/i.test(v.lang)) || vs.find((v) => /^zh/i.test(v.lang));
       if (zh) u.voice = zh;
@@ -499,8 +499,10 @@ export default function App() {
     if (!timerSession || timerPaused || timerRemaining === null || timerRemaining <= 0) return;
     if (timerTickRef.current === timerRemaining) return;
     timerTickRef.current = timerRemaining;
-    if (timerRemaining <= 5) { tone(1480, 0.12, 0.5, "square"); vibrate(60); countdownSpeak(timerRemaining); } // 最後 5 秒：高音＋震動＋唸數字，靜音時也聽得到
-    else { tone(880, 0.09, 0.32, "sine"); } // 每秒蜂鳴
+    const ph = timerSession.phases[timerSession.idx];
+    if (ph && timerRemaining === ph.dur) return; // 階段剛開始那一刻已經有「開始訓練／休息」語音，跳過避免打斷
+    if (timerRemaining <= 5) { tone(1480, 0.12, 0.5, "square"); vibrate(60); voiceBeep(String(timerRemaining), 1.15, 1.3); } // 最後 5 秒：高音＋震動＋唸數字，靜音時也聽得到
+    else { tone(880, 0.09, 0.32, "sine"); voiceBeep("逼", 1.4, 1); } // 每秒蜂鳴＋語音「逼」，靜音時也聽得到
   }, [timerSession, timerPaused, timerRemaining, volume]); // eslint-disable-line
 
   /* --- 計時器：倒數到 0，推進到下一階段或結束 --- */
