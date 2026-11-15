@@ -181,6 +181,7 @@ export default function App() {
   // 設定
   const [volume, setVolume] = useState(0.8);
   const lastVolumeRef = useRef(0.8);
+  const [muteFallback, setMuteFallback] = useState(true); // 靜音時用語音唸「beep/數字」頂替蜂鳴聲
   const [speak, setSpeak] = useState(true);
   const [restSec, setRestSec] = useState(2);
   const [autoCheck, setAutoCheck] = useState(false);
@@ -241,6 +242,7 @@ export default function App() {
           const o = JSON.parse(s.value);
           if (typeof o.volume === "number") setVolume(o.volume);
           else if (typeof o.sound === "boolean") setVolume(o.sound ? 0.8 : 0);
+          if (typeof o.muteFallback === "boolean") setMuteFallback(o.muteFallback);
           if (typeof o.speak === "boolean") setSpeak(o.speak);
           if (typeof o.restSec === "number") setRestSec(o.restSec);
           if (typeof o.autoCheck === "boolean") setAutoCheck(o.autoCheck);
@@ -272,7 +274,7 @@ export default function App() {
   }, []);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-log", JSON.stringify(log)); } catch (e) { } })(); }, [log, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-days", JSON.stringify(days)); } catch (e) { } })(); }, [days, loaded]);
-  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ volume, speak, restSec, autoCheck })); } catch (e) { } })(); }, [volume, speak, restSec, autoCheck, loaded]);
+  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ volume, muteFallback, speak, restSec, autoCheck })); } catch (e) { } })(); }, [volume, muteFallback, speak, restSec, autoCheck, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-timer", JSON.stringify({ sets: timerSets, cycles: timerCycles, trainSec: timerTrainSec, restSec: timerRestSec, setRestSec: timerSetRestSec })); } catch (e) { } })(); }, [timerSets, timerCycles, timerTrainSec, timerRestSec, timerSetRestSec, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-custom", JSON.stringify({ steps: customSteps, groups: customGroups, groupRestSec: customGroupRestSec })); } catch (e) { } })(); }, [customSteps, customGroups, customGroupRestSec, loaded]);
 
@@ -505,9 +507,9 @@ export default function App() {
     timerTickRef.current = timerRemaining;
     const ph = timerSession.phases[timerSession.idx];
     if (ph && timerRemaining === ph.dur) return; // 階段剛開始那一刻已經有「開始訓練／休息」語音，跳過避免打斷
-    if (timerRemaining <= 5) { tone(1480, 0.12, 0.5, "square"); vibrate(60); voiceBeep(String(timerRemaining), 1.15, 1.6); } // 最後 5 秒：高音＋震動＋唸數字，靜音時也聽得到
-    else { tone(880, 0.09, 0.32, "sine"); voiceBeep("beep", 1.7, 2, "en-US"); } // 每秒蜂鳴＋語音唸 "beep"（拉高音調／語速，更接近嗶聲），靜音時也聽得到
-  }, [timerSession, timerPaused, timerRemaining, volume]); // eslint-disable-line
+    if (timerRemaining <= 5) { tone(1480, 0.12, 0.5, "square"); vibrate(60); if (muteFallback) voiceBeep(String(timerRemaining), 1.15, 1.6); } // 最後 5 秒：高音＋震動（＋手機靜音時用語音唸數字頂替）
+    else { tone(880, 0.09, 0.32, "sine"); if (muteFallback) voiceBeep("beep", 1.7, 2, "en-US"); } // 每秒蜂鳴（＋手機靜音時用語音唸 "beep" 頂替）
+  }, [timerSession, timerPaused, timerRemaining, volume, muteFallback]); // eslint-disable-line
 
   /* --- 計時器：倒數到 0，推進到下一階段或結束 --- */
   useEffect(() => {
@@ -731,6 +733,16 @@ export default function App() {
                 style={timerMode === "simple" ? { background: theme.accent, color: "#0c0f16" } : { color: MUTED, background: "transparent" }}>簡易間歇</button>
               <button onClick={() => setTimerMode("custom")} className="rounded-lg py-2 text-sm font-semibold transition-all"
                 style={timerMode === "custom" ? { background: theme.accent, color: "#0c0f16" } : { color: MUTED, background: "transparent" }}>自訂課表</button>
+            </div>
+
+            <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm">靜音時改用語音蜂鳴</div>
+                  <div className="mt-0.5 text-[11px] leading-relaxed" style={{ color: MUTED }}>手機沒開靜音時建議關閉，才不會跟電子嗶聲同時播放；手機開靜音才需要打開（網頁無法偵測靜音開關狀態，需自行切換）</div>
+                </div>
+                <Toggle on={muteFallback} onClick={() => setMuteFallback((v) => !v)} labelOn="開" labelOff="關" accent={theme.accent} />
+              </div>
             </div>
 
             {timerMode === "simple" ? (
