@@ -220,9 +220,15 @@ export default function App() {
   const [customGroupRestSec, setCustomGroupRestSec] = useState(45);
   const customIdRef = useRef(5);
 
+  // 已儲存的自訂課表（可存好幾組，挑今天要用的）
+  const [savedRoutines, setSavedRoutines] = useState([]);
+  const [newRoutineName, setNewRoutineName] = useState("");
+  const savedIdRef = useRef(1);
+
   const audioRef = useRef(null);
   const tickRef = useRef(null);
   const prepRef = useRef(null);
+  const wakeLockRef = useRef(null);
   const theme = THEME[tab];
   const curEx = session ? ROUTINES[session.routine].exercises[session.idx] : null;
 
@@ -268,6 +274,13 @@ export default function App() {
           if (typeof o.groupRestSec === "number") setCustomGroupRestSec(o.groupRestSec);
         }
       } catch (e) { }
+      try {
+        const sr = await store.get("sfc-saved-routines");
+        if (sr && sr.value) {
+          const arr = JSON.parse(sr.value);
+          if (Array.isArray(arr)) { setSavedRoutines(arr); savedIdRef.current = Math.max(0, ...arr.map((r) => r.id || 0)) + 1; }
+        }
+      } catch (e) { }
       setLoaded(true);
     })();
     try { window.speechSynthesis && window.speechSynthesis.getVoices(); } catch (e) { }
@@ -277,6 +290,7 @@ export default function App() {
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ volume, muteFallback, speak, restSec, autoCheck })); } catch (e) { } })(); }, [volume, muteFallback, speak, restSec, autoCheck, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-timer", JSON.stringify({ sets: timerSets, cycles: timerCycles, trainSec: timerTrainSec, restSec: timerRestSec, setRestSec: timerSetRestSec })); } catch (e) { } })(); }, [timerSets, timerCycles, timerTrainSec, timerRestSec, timerSetRestSec, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-custom", JSON.stringify({ steps: customSteps, groups: customGroups, groupRestSec: customGroupRestSec })); } catch (e) { } })(); }, [customSteps, customGroups, customGroupRestSec, loaded]);
+  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-saved-routines", JSON.stringify(savedRoutines)); } catch (e) { } })(); }, [savedRoutines, loaded]);
 
   // 做了任一動作 → 今天自動打勾
   useEffect(() => {
@@ -409,9 +423,25 @@ export default function App() {
     }
   }, [remaining, phase, autoCheck]); // eslint-disable-line
 
+  /* --- 螢幕常亮（進行中避免螢幕自動變暗／鎖定），不支援的瀏覽器會靜默略過 --- */
+  async function requestWakeLock() {
+    try { if ("wakeLock" in navigator) wakeLockRef.current = await navigator.wakeLock.request("screen"); } catch (e) { }
+  }
+  function releaseWakeLock() {
+    try { wakeLockRef.current && wakeLockRef.current.release(); } catch (e) { }
+    wakeLockRef.current = null;
+  }
+  // 切回分頁時若還在進行中，重新取得（背景時系統會自動釋放）
+  useEffect(() => {
+    function onVisible() { if (document.visibilityState === "visible" && (session || timerSession)) requestWakeLock(); }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [session, timerSession]); // eslint-disable-line
+
   /* --- 流程控制 --- */
   function start(routine, idx = 0) {
     try { if (!audioRef.current) audioRef.current = new (window.AudioContext || window.webkitAudioContext)(); if (audioRef.current.state === "suspended") audioRef.current.resume(); } catch (e) { }
+    requestWakeLock();
     setFinished(null);
     setSession({ routine, idx, side: 1 });
   }
@@ -420,13 +450,14 @@ export default function App() {
       if (!s) return s;
       const list = ROUTINES[s.routine].exercises;
       if (s.idx + 1 < list.length) return { ...s, idx: s.idx + 1, side: 1 };
+      releaseWakeLock();
       setFinished(s.routine);
       return null;
     });
   }
   function repDone() { markDone(curEx.id); advance(); }
   function skip() { stopSpeak(); advance(); }
-  function quit() { stopSpeak(); setSession(null); setFlash(null); }
+  function quit() { stopSpeak(); releaseWakeLock(); setSession(null); setFlash(null); }
 
   /* --- 計時器：產生階段序列（一組＝循環次數個「訓練→休息」，組間穿插較長休息） --- */
   function buildTimerPhases(sets, cyclesPerSet, trainSec, restSec, setRestSec) {
@@ -442,15 +473,19 @@ export default function App() {
   }
   function startTimer() {
     try { if (!audioRef.current) audioRef.current = new (window.AudioContext || window.webkitAudioContext)(); if (audioRef.current.state === "suspended") audioRef.current.resume(); } catch (e) { }
+    requestWakeLock();
     const phases = buildTimerPhases(timerSets, timerCycles, timerTrainSec, timerRestSec, timerSetRestSec);
     if (!phases.length) return;
     setTimerFinished(false);
     setTimerSession({ phases, idx: 0, totalSets: timerSets, cyclesPerSet: timerCycles });
   }
 
-  /* --- 自訂課表：動作清單（名稱含「休息」會自動標成休息色） --- */
+  /* --- 自訂課表：動作清單（名稱最多5個字，含「休息」會自動標成休息色） --- */
   function addCustomStep() { setCustomSteps((p) => [...p, { id: customIdRef.current++, name: "", sec: 30 }]); }
-  function updateCustomStep(id, patch) { setCustomSteps((p) => p.map((s) => (s.id === id ? { ...s, ...patch } : s))); }
+  function updateCustomStep(id, patch) {
+    if (typeof patch.name === "string") patch = { ...patch, name: patch.name.slice(0, 5) };
+    setCustomSteps((p) => p.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }
   function removeCustomStep(id) { setCustomSteps((p) => p.filter((s) => s.id !== id)); }
   function buildCustomPhases(steps, groups, groupRestSec) {
     const valid = steps.filter((s) => s.name.trim() && s.sec > 0);
@@ -463,19 +498,34 @@ export default function App() {
   }
   function startCustomTimer() {
     try { if (!audioRef.current) audioRef.current = new (window.AudioContext || window.webkitAudioContext)(); if (audioRef.current.state === "suspended") audioRef.current.resume(); } catch (e) { }
+    requestWakeLock();
     const phases = buildCustomPhases(customSteps, customGroups, customGroupRestSec);
     if (!phases.length) return;
     setTimerFinished(false);
     setTimerSession({ phases, idx: 0, totalSets: customGroups, cyclesPerSet: 1 });
   }
 
-  function quitTimer() { stopSpeak(); setTimerSession(null); }
+  /* --- 已儲存的自訂課表：存檔／套用／刪除 --- */
+  function saveCurrentRoutine() {
+    const name = newRoutineName.trim().slice(0, 20) || `課表 ${savedRoutines.length + 1}`;
+    const id = savedIdRef.current++;
+    setSavedRoutines((p) => [...p, { id, name, steps: customSteps, groups: customGroups, groupRestSec: customGroupRestSec }]);
+    setNewRoutineName("");
+  }
+  function loadRoutine(r) {
+    setCustomSteps(r.steps);
+    setCustomGroups(r.groups);
+    setCustomGroupRestSec(r.groupRestSec);
+  }
+  function deleteRoutine(id) { setSavedRoutines((p) => p.filter((r) => r.id !== id)); }
+
+  function quitTimer() { stopSpeak(); releaseWakeLock(); setTimerSession(null); }
   function skipTimerPhase() {
     stopSpeak();
     setTimerSession((s) => {
       if (!s) return s;
       const next = s.idx + 1;
-      if (next >= s.phases.length) { setTimerFinishedTotal(s.totalSets); setTimerFinished(true); return null; }
+      if (next >= s.phases.length) { releaseWakeLock(); setTimerFinishedTotal(s.totalSets); setTimerFinished(true); return null; }
       return { ...s, idx: next };
     });
   }
@@ -490,7 +540,7 @@ export default function App() {
     setTimerRemaining(ph.dur);
     alertTone();
     vibrate(ph.type === "train" ? [120, 60, 120] : [250]);
-    say(ph.type === "train" ? "開始訓練" : ph.type === "rest" ? "休息" : "組間休息");
+    say(ph.label); // 念出該階段內容（自訂課表會念動作名稱，簡易模式念「訓練/休息/組間休息」）
   }, [timerSession && timerSession.idx, !!timerSession]); // eslint-disable-line
 
   /* --- 計時器：倒數 --- */
@@ -520,7 +570,7 @@ export default function App() {
       setTimerSession((s) => {
         if (!s) return s;
         const next = s.idx + 1;
-        if (next >= s.phases.length) { setTimerFinishedTotal(s.totalSets); setTimerFinished(true); return null; }
+        if (next >= s.phases.length) { releaseWakeLock(); setTimerFinishedTotal(s.totalSets); setTimerFinished(true); return null; }
         return { ...s, idx: next };
       });
     }, 450);
@@ -647,9 +697,9 @@ export default function App() {
             <VolumeSlider value={volume} onChange={setVolume} onMuteToggle={toggleMute} accent={pc.fg} textColor={pc.fg} />
           </div>
 
-          <div className="flex flex-1 flex-col items-center justify-center px-6">
-            <div className="text-3xl font-black tracking-widest" style={{ opacity: 0.85 }}>{ph.label}</div>
-            <div style={{ fontSize: 112, fontWeight: 900, fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: -2 }}>{fmtClock(timerRemaining ?? 0)}</div>
+          <div className="flex flex-1 flex-col items-center justify-center px-4">
+            <div style={{ fontSize: "clamp(2.25rem, 17vw, 88px)", fontWeight: 900, letterSpacing: -1, lineHeight: 1.05, textAlign: "center", width: "100%", opacity: 0.9 }}>{ph.label}</div>
+            <div style={{ fontSize: 112, fontWeight: 900, fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: -2, marginTop: 8 }}>{fmtClock(timerRemaining ?? 0)}</div>
           </div>
 
           {nextPh && (
@@ -774,8 +824,9 @@ export default function App() {
                         <input
                           type="text"
                           value={st.name}
+                          maxLength={5}
                           onChange={(e) => updateCustomStep(st.id, { name: e.target.value })}
-                          placeholder="動作名稱（含「休息」自動標紅）"
+                          placeholder="動作名稱（最多5字，含「休息」自動標紅）"
                           className="min-w-0 flex-1 rounded-lg px-2.5 py-2.5 text-sm"
                           style={{ border: `1px solid ${BORDER}`, color: TEXT, background: "rgba(255,255,255,0.04)" }}
                         />
@@ -799,6 +850,34 @@ export default function App() {
                     <NumberField label="組間休息" value={customGroupRestSec} onChange={setCustomGroupRestSec} min={0} max={600} step={5} suffix="秒" />
                   </div>
                   <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(customTotalSec)}</div>
+                </div>
+
+                {/* 已儲存的課表：可存好幾組，挑今天要的 */}
+                <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+                  <div className="mb-3 text-sm font-semibold">已儲存的課表</div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newRoutineName}
+                      onChange={(e) => setNewRoutineName(e.target.value)}
+                      placeholder="課表名稱（例如：核心、全身）"
+                      className="min-w-0 flex-1 rounded-lg px-2.5 py-2.5 text-sm"
+                      style={{ border: `1px solid ${BORDER}`, color: TEXT, background: "rgba(255,255,255,0.04)" }}
+                    />
+                    <button onClick={saveCurrentRoutine} className="shrink-0 rounded-lg px-3 py-2.5 text-sm font-semibold" style={{ background: theme.accent, color: "#0c0f16" }}>💾 存成新課表</button>
+                  </div>
+                  {savedRoutines.length > 0 && (
+                    <div className="mt-3 flex flex-col gap-2">
+                      {savedRoutines.map((r) => (
+                        <div key={r.id} className="flex items-center gap-2 rounded-lg px-3 py-2.5" style={{ background: "rgba(255,255,255,0.04)" }}>
+                          <span className="min-w-0 flex-1 truncate text-sm font-semibold">{r.name}</span>
+                          <span className="shrink-0 text-[11px]" style={{ color: MUTED }}>{r.steps.length} 動作・{r.groups} 組</span>
+                          <button onClick={() => loadRoutine(r)} className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold" style={{ background: theme.accent, color: "#0c0f16" }}>套用</button>
+                          <button onClick={() => deleteRoutine(r.id)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm" style={{ color: MUTED, background: "rgba(255,255,255,0.05)" }}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <button onClick={startCustomTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始課表</button>
