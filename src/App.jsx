@@ -174,11 +174,24 @@ export default function App() {
   const [timerTrainSec, setTimerTrainSec] = useState(30);
   const [timerRestSec, setTimerRestSec] = useState(15);
   const [timerCycleRestSec, setTimerCycleRestSec] = useState(30);
-  const [timerSession, setTimerSession] = useState(null); // { phases, idx }
+  const [timerSession, setTimerSession] = useState(null); // { phases, idx, total }
   const [timerRemaining, setTimerRemaining] = useState(null);
   const [timerPaused, setTimerPaused] = useState(false);
   const [timerFinished, setTimerFinished] = useState(false);
+  const [timerFinishedTotal, setTimerFinishedTotal] = useState(0);
   const timerTickRef = useRef(null);
+
+  // 計時器模式：簡易間歇 / 自訂課表
+  const [timerMode, setTimerMode] = useState("simple");
+  const [customSteps, setCustomSteps] = useState([
+    { id: 1, name: "開合跳", sec: 50 },
+    { id: 2, name: "休息", sec: 30 },
+    { id: 3, name: "高抬腿", sec: 35 },
+    { id: 4, name: "休息", sec: 30 },
+  ]);
+  const [customGroups, setCustomGroups] = useState(3);
+  const [customGroupRestSec, setCustomGroupRestSec] = useState(45);
+  const customIdRef = useRef(5);
 
   const audioRef = useRef(null);
   const tickRef = useRef(null);
@@ -210,6 +223,15 @@ export default function App() {
           if (typeof o.cycleRestSec === "number") setTimerCycleRestSec(o.cycleRestSec);
         }
       } catch (e) { }
+      try {
+        const c = await store.get("sfc-custom");
+        if (c && c.value) {
+          const o = JSON.parse(c.value);
+          if (Array.isArray(o.steps) && o.steps.length) { setCustomSteps(o.steps); customIdRef.current = Math.max(...o.steps.map((s) => s.id || 0)) + 1; }
+          if (typeof o.groups === "number") setCustomGroups(o.groups);
+          if (typeof o.groupRestSec === "number") setCustomGroupRestSec(o.groupRestSec);
+        }
+      } catch (e) { }
       setLoaded(true);
     })();
     try { window.speechSynthesis && window.speechSynthesis.getVoices(); } catch (e) { }
@@ -218,6 +240,7 @@ export default function App() {
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-days", JSON.stringify(days)); } catch (e) { } })(); }, [days, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ sound, speak, restSec, autoCheck })); } catch (e) { } })(); }, [sound, speak, restSec, autoCheck, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-timer", JSON.stringify({ cycles: timerCycles, trainSec: timerTrainSec, restSec: timerRestSec, cycleRestSec: timerCycleRestSec })); } catch (e) { } })(); }, [timerCycles, timerTrainSec, timerRestSec, timerCycleRestSec, loaded]);
+  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-custom", JSON.stringify({ steps: customSteps, groups: customGroups, groupRestSec: customGroupRestSec })); } catch (e) { } })(); }, [customSteps, customGroups, customGroupRestSec, loaded]);
 
   // 做了任一動作 → 今天自動打勾
   useEffect(() => {
@@ -345,9 +368,9 @@ export default function App() {
   function buildTimerPhases(cycles, trainSec, restSec, cycleRestSec) {
     const phases = [];
     for (let i = 0; i < cycles; i++) {
-      phases.push({ type: "train", cycle: i + 1, dur: trainSec });
-      if (restSec > 0) phases.push({ type: "rest", cycle: i + 1, dur: restSec });
-      if (i < cycles - 1 && cycleRestSec > 0) phases.push({ type: "cycleRest", cycle: i + 1, dur: cycleRestSec });
+      phases.push({ type: "train", cycle: i + 1, dur: trainSec, label: PHASE_LABEL.train });
+      if (restSec > 0) phases.push({ type: "rest", cycle: i + 1, dur: restSec, label: PHASE_LABEL.rest });
+      if (i < cycles - 1 && cycleRestSec > 0) phases.push({ type: "cycleRest", cycle: i + 1, dur: cycleRestSec, label: PHASE_LABEL.cycleRest });
     }
     return phases;
   }
@@ -356,15 +379,37 @@ export default function App() {
     const phases = buildTimerPhases(timerCycles, timerTrainSec, timerRestSec, timerCycleRestSec);
     if (!phases.length) return;
     setTimerFinished(false);
-    setTimerSession({ phases, idx: 0 });
+    setTimerSession({ phases, idx: 0, total: timerCycles });
   }
+
+  /* --- 自訂課表：動作清單（名稱含「休息」會自動標成休息色） --- */
+  function addCustomStep() { setCustomSteps((p) => [...p, { id: customIdRef.current++, name: "", sec: 30 }]); }
+  function updateCustomStep(id, patch) { setCustomSteps((p) => p.map((s) => (s.id === id ? { ...s, ...patch } : s))); }
+  function removeCustomStep(id) { setCustomSteps((p) => p.filter((s) => s.id !== id)); }
+  function buildCustomPhases(steps, groups, groupRestSec) {
+    const valid = steps.filter((s) => s.name.trim() && s.sec > 0);
+    const phases = [];
+    for (let g = 0; g < groups; g++) {
+      valid.forEach((st) => phases.push({ type: /休息/.test(st.name) ? "rest" : "train", cycle: g + 1, dur: st.sec, label: st.name }));
+      if (g < groups - 1 && groupRestSec > 0) phases.push({ type: "cycleRest", cycle: g + 1, dur: groupRestSec, label: "組間休息" });
+    }
+    return phases;
+  }
+  function startCustomTimer() {
+    try { if (!audioRef.current) audioRef.current = new (window.AudioContext || window.webkitAudioContext)(); if (audioRef.current.state === "suspended") audioRef.current.resume(); } catch (e) { }
+    const phases = buildCustomPhases(customSteps, customGroups, customGroupRestSec);
+    if (!phases.length) return;
+    setTimerFinished(false);
+    setTimerSession({ phases, idx: 0, total: customGroups });
+  }
+
   function quitTimer() { stopSpeak(); setTimerSession(null); }
   function skipTimerPhase() {
     stopSpeak();
     setTimerSession((s) => {
       if (!s) return s;
       const next = s.idx + 1;
-      if (next >= s.phases.length) { setTimerFinished(true); return null; }
+      if (next >= s.phases.length) { setTimerFinishedTotal(s.total); setTimerFinished(true); return null; }
       return { ...s, idx: next };
     });
   }
@@ -394,8 +439,8 @@ export default function App() {
     if (!timerSession || timerPaused || timerRemaining === null || timerRemaining <= 0) return;
     if (timerTickRef.current === timerRemaining) return;
     timerTickRef.current = timerRemaining;
-    if (timerRemaining <= 3) { tone(1320, 0.1, 0.45, "square"); vibrate(50); }
-    else tone(720, 0.05, 0.14, "triangle");
+    if (timerRemaining <= 5) { tone(1480, 0.12, 0.5, "square"); vibrate(60); } // 最後 5 秒：高音＋震動，明顯不同
+    else { tone(880, 0.09, 0.32, "sine"); } // 每秒蜂鳴
   }, [timerSession, timerPaused, timerRemaining, sound]); // eslint-disable-line
 
   /* --- 計時器：倒數到 0，推進到下一階段或結束 --- */
@@ -407,7 +452,7 @@ export default function App() {
       setTimerSession((s) => {
         if (!s) return s;
         const next = s.idx + 1;
-        if (next >= s.phases.length) { setTimerFinished(true); return null; }
+        if (next >= s.phases.length) { setTimerFinishedTotal(s.total); setTimerFinished(true); return null; }
         return { ...s, idx: next };
       });
     }, 450);
@@ -517,13 +562,13 @@ export default function App() {
     const ph = timerSession.phases[timerSession.idx];
     const nextPh = timerSession.phases[timerSession.idx + 1] || null;
     const pc = PHASE_COLOR[ph.type];
-    const roundsLeft = timerCycles - ph.cycle + 1;
+    const roundsLeft = timerSession.total - ph.cycle + 1;
 
     return (
       <div style={{ background: pc.bg, color: pc.fg, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif", transition: "background 0.3s" }}>
         <div className="mx-auto flex flex-col" style={{ maxWidth: 520, minHeight: "100vh" }}>
-          <div className="flex items-center justify-between px-5 pt-5">
-            <span className="text-base font-bold" style={{ opacity: 0.8 }}>第 {ph.cycle} / {timerCycles} 輪</span>
+          <div className="flex items-center justify-between px-5" style={{ paddingTop: "calc(22px + env(safe-area-inset-top, 0px))" }}>
+            <span className="text-base font-bold" style={{ opacity: 0.8 }}>第 {ph.cycle} / {timerSession.total} 輪</span>
             <div className="flex items-center gap-3">
               <button onClick={() => setSound((s) => !s)} className="flex h-11 w-11 items-center justify-center rounded-full text-xl" style={{ background: "rgba(0,0,0,0.15)" }}>{sound ? "🔊" : "🔈"}</button>
               <button onClick={quitTimer} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(0,0,0,0.15)" }}>✕</button>
@@ -531,13 +576,13 @@ export default function App() {
           </div>
 
           <div className="flex flex-1 flex-col items-center justify-center px-6">
-            <div className="text-3xl font-black tracking-widest" style={{ opacity: 0.85 }}>{PHASE_LABEL[ph.type]}</div>
+            <div className="text-3xl font-black tracking-widest" style={{ opacity: 0.85 }}>{ph.label}</div>
             <div style={{ fontSize: 112, fontWeight: 900, fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: -2 }}>{fmtClock(timerRemaining ?? 0)}</div>
           </div>
 
           {nextPh && (
             <div className="flex items-center justify-center py-4" style={{ background: PHASE_COLOR[nextPh.type].bg, color: PHASE_COLOR[nextPh.type].fg }}>
-              <span className="text-lg font-bold tracking-wide">接下來：{PHASE_LABEL[nextPh.type]}　{fmtClock(nextPh.dur)}</span>
+              <span className="text-lg font-bold tracking-wide">接下來：{nextPh.label}　{fmtClock(nextPh.dur)}</span>
             </div>
           )}
 
@@ -568,7 +613,7 @@ export default function App() {
         <div className="mx-auto flex flex-col items-center justify-center px-6" style={{ maxWidth: 520, minHeight: "100vh" }}>
           <div className="text-6xl">⏱️</div>
           <h2 className="mt-4 text-2xl font-bold">計時結束</h2>
-          <p className="mt-2 text-center" style={{ color: MUTED }}>完成 {timerCycles} 輪循環，做得好！</p>
+          <p className="mt-2 text-center" style={{ color: MUTED }}>完成 {timerFinishedTotal} 輪循環，做得好！</p>
           <button onClick={() => setTimerFinished(false)} className="mt-8 rounded-xl px-6 py-3 font-semibold" style={{ background: th.accent, color: "#0c0f16" }}>回到主畫面</button>
         </div>
       </div>
@@ -581,6 +626,8 @@ export default function App() {
   const totalEx = routine ? routine.exercises.length : 0;
   const streak = calcStreak(days);
   const timerTotalSec = timerCycles * timerTrainSec + timerCycles * timerRestSec + Math.max(0, timerCycles - 1) * timerCycleRestSec;
+  const customStepsSec = customSteps.filter((s) => s.sec > 0).reduce((a, s) => a + s.sec, 0);
+  const customTotalSec = customStepsSec * customGroups + Math.max(0, customGroups - 1) * customGroupRestSec;
 
   return (
     <div style={{ background: BG, color: TEXT, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif" }}>
@@ -608,19 +655,72 @@ export default function App() {
 
         {tab === "timer" ? (
           <>
-            {/* 計時器設定 */}
-            <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-              <div className="mb-3 text-sm font-semibold">計時器設定</div>
-              <div className="flex flex-col gap-3">
-                <NumberField label="循環次數" value={timerCycles} onChange={setTimerCycles} min={1} max={50} step={1} suffix="輪" />
-                <NumberField label="訓練時間" value={timerTrainSec} onChange={setTimerTrainSec} min={5} max={1800} step={5} suffix="秒" />
-                <NumberField label="休息時間" value={timerRestSec} onChange={setTimerRestSec} min={0} max={600} step={5} suffix="秒" />
-                <NumberField label="循環間休息" value={timerCycleRestSec} onChange={setTimerCycleRestSec} min={0} max={600} step={5} suffix="秒" />
-              </div>
-              <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(timerTotalSec)}</div>
+            {/* 計時器模式 */}
+            <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl p-1" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+              <button onClick={() => setTimerMode("simple")} className="rounded-lg py-2 text-sm font-semibold transition-all"
+                style={timerMode === "simple" ? { background: theme.accent, color: "#0c0f16" } : { color: MUTED, background: "transparent" }}>簡易間歇</button>
+              <button onClick={() => setTimerMode("custom")} className="rounded-lg py-2 text-sm font-semibold transition-all"
+                style={timerMode === "custom" ? { background: theme.accent, color: "#0c0f16" } : { color: MUTED, background: "transparent" }}>自訂課表</button>
             </div>
 
-            <button onClick={startTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始計時</button>
+            {timerMode === "simple" ? (
+              <>
+                {/* 簡易間歇設定 */}
+                <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+                  <div className="mb-3 text-sm font-semibold">計時器設定</div>
+                  <div className="flex flex-col gap-3">
+                    <NumberField label="循環次數" value={timerCycles} onChange={setTimerCycles} min={1} max={50} step={1} suffix="輪" />
+                    <NumberField label="訓練時間" value={timerTrainSec} onChange={setTimerTrainSec} min={5} max={1800} step={5} suffix="秒" />
+                    <NumberField label="休息時間" value={timerRestSec} onChange={setTimerRestSec} min={0} max={600} step={5} suffix="秒" />
+                    <NumberField label="循環間休息" value={timerCycleRestSec} onChange={setTimerCycleRestSec} min={0} max={600} step={5} suffix="秒" />
+                  </div>
+                  <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(timerTotalSec)}</div>
+                </div>
+
+                <button onClick={startTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始計時</button>
+              </>
+            ) : (
+              <>
+                {/* 自訂課表 */}
+                <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+                  <div className="mb-3 text-sm font-semibold">自訂課表</div>
+                  <div className="flex flex-col gap-2">
+                    {customSteps.map((st, i) => (
+                      <div key={st.id} className="flex items-center gap-2">
+                        <span className="w-4 shrink-0 text-xs" style={{ color: MUTED }}>{i + 1}</span>
+                        <input
+                          type="text"
+                          value={st.name}
+                          onChange={(e) => updateCustomStep(st.id, { name: e.target.value })}
+                          placeholder="動作名稱（含「休息」自動標紅）"
+                          className="min-w-0 flex-1 rounded-lg px-2.5 py-2.5 text-sm"
+                          style={{ border: `1px solid ${BORDER}`, color: TEXT, background: "rgba(255,255,255,0.04)" }}
+                        />
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={st.sec}
+                          onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); updateCustomStep(st.id, { sec: d === "" ? 0 : Math.min(3600, parseInt(d, 10)) }); }}
+                          className="w-14 shrink-0 rounded-lg text-center text-sm font-bold"
+                          style={{ border: `1px solid ${BORDER}`, color: TEXT, background: "rgba(255,255,255,0.04)", padding: "8px 0" }}
+                        />
+                        <span className="shrink-0 text-xs" style={{ color: MUTED }}>秒</span>
+                        <button onClick={() => removeCustomStep(st.id)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg" style={{ color: MUTED, background: "rgba(255,255,255,0.05)" }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={addCustomStep} className="mt-3 w-full rounded-lg py-3 text-sm font-semibold" style={{ background: "rgba(255,255,255,0.06)", color: theme.accent }}>＋ 新增動作</button>
+
+                  <div className="mt-4 flex flex-col gap-3 border-t pt-3" style={{ borderColor: BORDER }}>
+                    <NumberField label="循環組數" value={customGroups} onChange={setCustomGroups} min={1} max={50} step={1} suffix="組" />
+                    <NumberField label="組間休息" value={customGroupRestSec} onChange={setCustomGroupRestSec} min={0} max={600} step={5} suffix="秒" />
+                  </div>
+                  <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(customTotalSec)}</div>
+                </div>
+
+                <button onClick={startCustomTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始課表</button>
+              </>
+            )}
           </>
         ) : (
           <>
