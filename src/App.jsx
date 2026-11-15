@@ -225,7 +225,12 @@ export default function App() {
         const sr = await store.get("sfc-saved-routines");
         if (sr && sr.value) {
           const arr = JSON.parse(sr.value);
-          if (Array.isArray(arr)) { setSavedRoutines(arr); savedIdRef.current = Math.max(2, ...arr.map((r) => r.id || 0)) + 1; }
+          if (Array.isArray(arr)) {
+            const builtinIds = new Set(BUILTIN_ROUTINES.map((r) => r.id));
+            const merged = [...BUILTIN_ROUTINES, ...arr.filter((r) => !builtinIds.has(r.id))];
+            setSavedRoutines(merged);
+            savedIdRef.current = Math.max(2, ...merged.map((r) => r.id || 0)) + 1;
+          }
         }
       } catch (e) { }
       setLoaded(true);
