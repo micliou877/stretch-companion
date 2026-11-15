@@ -91,7 +91,7 @@ const TABS = [
   { key: "night", icon: "🌙", label: "睡前" },
   { key: "timer", icon: "⏱️", label: "計時器" },
 ];
-const PHASE_LABEL = { train: "訓練", rest: "休息", cycleRest: "循環間休息" };
+const PHASE_LABEL = { train: "訓練", rest: "休息", cycleRest: "組間休息" };
 const PHASE_COLOR = {
   train: { bg: "#8BE62B", fg: "#10210a" },
   rest: { bg: "#FF4747", fg: "#2a0000" },
@@ -169,11 +169,12 @@ export default function App() {
   const [flash, setFlash] = useState(null);
   const [finished, setFinished] = useState(null);
 
-  // 計時器（可自訂循環次數、訓練／休息／循環間休息秒數）
+  // 計時器（可自訂幾組、每組循環次數、訓練／休息／組間休息秒數）
+  const [timerSets, setTimerSets] = useState(1);
   const [timerCycles, setTimerCycles] = useState(5);
   const [timerTrainSec, setTimerTrainSec] = useState(30);
   const [timerRestSec, setTimerRestSec] = useState(15);
-  const [timerCycleRestSec, setTimerCycleRestSec] = useState(30);
+  const [timerSetRestSec, setTimerSetRestSec] = useState(30);
   const [timerSession, setTimerSession] = useState(null); // { phases, idx, total }
   const [timerRemaining, setTimerRemaining] = useState(null);
   const [timerPaused, setTimerPaused] = useState(false);
@@ -217,10 +218,11 @@ export default function App() {
         const t = await store.get("sfc-timer");
         if (t && t.value) {
           const o = JSON.parse(t.value);
+          if (typeof o.sets === "number") setTimerSets(o.sets);
           if (typeof o.cycles === "number") setTimerCycles(o.cycles);
           if (typeof o.trainSec === "number") setTimerTrainSec(o.trainSec);
           if (typeof o.restSec === "number") setTimerRestSec(o.restSec);
-          if (typeof o.cycleRestSec === "number") setTimerCycleRestSec(o.cycleRestSec);
+          if (typeof o.setRestSec === "number") setTimerSetRestSec(o.setRestSec);
         }
       } catch (e) { }
       try {
@@ -239,7 +241,7 @@ export default function App() {
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-log", JSON.stringify(log)); } catch (e) { } })(); }, [log, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-days", JSON.stringify(days)); } catch (e) { } })(); }, [days, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-settings", JSON.stringify({ sound, speak, restSec, autoCheck })); } catch (e) { } })(); }, [sound, speak, restSec, autoCheck, loaded]);
-  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-timer", JSON.stringify({ cycles: timerCycles, trainSec: timerTrainSec, restSec: timerRestSec, cycleRestSec: timerCycleRestSec })); } catch (e) { } })(); }, [timerCycles, timerTrainSec, timerRestSec, timerCycleRestSec, loaded]);
+  useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-timer", JSON.stringify({ sets: timerSets, cycles: timerCycles, trainSec: timerTrainSec, restSec: timerRestSec, setRestSec: timerSetRestSec })); } catch (e) { } })(); }, [timerSets, timerCycles, timerTrainSec, timerRestSec, timerSetRestSec, loaded]);
   useEffect(() => { if (!loaded) return; (async () => { try { await store.set("sfc-custom", JSON.stringify({ steps: customSteps, groups: customGroups, groupRestSec: customGroupRestSec })); } catch (e) { } })(); }, [customSteps, customGroups, customGroupRestSec, loaded]);
 
   // 做了任一動作 → 今天自動打勾
@@ -364,22 +366,24 @@ export default function App() {
   function skip() { stopSpeak(); advance(); }
   function quit() { stopSpeak(); setSession(null); setFlash(null); }
 
-  /* --- 計時器：產生階段序列（訓練 → 休息，循環間穿插較長休息） --- */
-  function buildTimerPhases(cycles, trainSec, restSec, cycleRestSec) {
+  /* --- 計時器：產生階段序列（一組＝循環次數個「訓練→休息」，組間穿插較長休息） --- */
+  function buildTimerPhases(sets, cyclesPerSet, trainSec, restSec, setRestSec) {
     const phases = [];
-    for (let i = 0; i < cycles; i++) {
-      phases.push({ type: "train", cycle: i + 1, dur: trainSec, label: PHASE_LABEL.train });
-      if (restSec > 0) phases.push({ type: "rest", cycle: i + 1, dur: restSec, label: PHASE_LABEL.rest });
-      if (i < cycles - 1 && cycleRestSec > 0) phases.push({ type: "cycleRest", cycle: i + 1, dur: cycleRestSec, label: PHASE_LABEL.cycleRest });
+    for (let g = 0; g < sets; g++) {
+      for (let i = 0; i < cyclesPerSet; i++) {
+        phases.push({ type: "train", set: g + 1, cycle: i + 1, dur: trainSec, label: PHASE_LABEL.train });
+        if (restSec > 0) phases.push({ type: "rest", set: g + 1, cycle: i + 1, dur: restSec, label: PHASE_LABEL.rest });
+      }
+      if (g < sets - 1 && setRestSec > 0) phases.push({ type: "cycleRest", set: g + 1, cycle: cyclesPerSet, dur: setRestSec, label: PHASE_LABEL.cycleRest });
     }
     return phases;
   }
   function startTimer() {
     try { if (!audioRef.current) audioRef.current = new (window.AudioContext || window.webkitAudioContext)(); if (audioRef.current.state === "suspended") audioRef.current.resume(); } catch (e) { }
-    const phases = buildTimerPhases(timerCycles, timerTrainSec, timerRestSec, timerCycleRestSec);
+    const phases = buildTimerPhases(timerSets, timerCycles, timerTrainSec, timerRestSec, timerSetRestSec);
     if (!phases.length) return;
     setTimerFinished(false);
-    setTimerSession({ phases, idx: 0, total: timerCycles });
+    setTimerSession({ phases, idx: 0, totalSets: timerSets, cyclesPerSet: timerCycles });
   }
 
   /* --- 自訂課表：動作清單（名稱含「休息」會自動標成休息色） --- */
@@ -390,8 +394,8 @@ export default function App() {
     const valid = steps.filter((s) => s.name.trim() && s.sec > 0);
     const phases = [];
     for (let g = 0; g < groups; g++) {
-      valid.forEach((st) => phases.push({ type: /休息/.test(st.name) ? "rest" : "train", cycle: g + 1, dur: st.sec, label: st.name }));
-      if (g < groups - 1 && groupRestSec > 0) phases.push({ type: "cycleRest", cycle: g + 1, dur: groupRestSec, label: "組間休息" });
+      valid.forEach((st) => phases.push({ type: /休息/.test(st.name) ? "rest" : "train", set: g + 1, cycle: 1, dur: st.sec, label: st.name }));
+      if (g < groups - 1 && groupRestSec > 0) phases.push({ type: "cycleRest", set: g + 1, cycle: 1, dur: groupRestSec, label: "組間休息" });
     }
     return phases;
   }
@@ -400,7 +404,7 @@ export default function App() {
     const phases = buildCustomPhases(customSteps, customGroups, customGroupRestSec);
     if (!phases.length) return;
     setTimerFinished(false);
-    setTimerSession({ phases, idx: 0, total: customGroups });
+    setTimerSession({ phases, idx: 0, totalSets: customGroups, cyclesPerSet: 1 });
   }
 
   function quitTimer() { stopSpeak(); setTimerSession(null); }
@@ -409,7 +413,7 @@ export default function App() {
     setTimerSession((s) => {
       if (!s) return s;
       const next = s.idx + 1;
-      if (next >= s.phases.length) { setTimerFinishedTotal(s.total); setTimerFinished(true); return null; }
+      if (next >= s.phases.length) { setTimerFinishedTotal(s.totalSets); setTimerFinished(true); return null; }
       return { ...s, idx: next };
     });
   }
@@ -424,7 +428,7 @@ export default function App() {
     setTimerRemaining(ph.dur);
     alertTone();
     vibrate(ph.type === "train" ? [120, 60, 120] : [250]);
-    say(ph.type === "train" ? "開始訓練" : ph.type === "rest" ? "休息" : "循環間休息");
+    say(ph.type === "train" ? "開始訓練" : ph.type === "rest" ? "休息" : "組間休息");
   }, [timerSession && timerSession.idx, !!timerSession]); // eslint-disable-line
 
   /* --- 計時器：倒數 --- */
@@ -452,7 +456,7 @@ export default function App() {
       setTimerSession((s) => {
         if (!s) return s;
         const next = s.idx + 1;
-        if (next >= s.phases.length) { setTimerFinishedTotal(s.total); setTimerFinished(true); return null; }
+        if (next >= s.phases.length) { setTimerFinishedTotal(s.totalSets); setTimerFinished(true); return null; }
         return { ...s, idx: next };
       });
     }, 450);
@@ -562,13 +566,16 @@ export default function App() {
     const ph = timerSession.phases[timerSession.idx];
     const nextPh = timerSession.phases[timerSession.idx + 1] || null;
     const pc = PHASE_COLOR[ph.type];
-    const roundsLeft = timerSession.total - ph.cycle + 1;
+    const setsLeft = timerSession.totalSets - ph.set + 1;
 
     return (
       <div style={{ background: pc.bg, color: pc.fg, minHeight: "100vh", fontFamily: "system-ui,-apple-system,'Noto Sans TC',sans-serif", transition: "background 0.3s" }}>
         <div className="mx-auto flex flex-col" style={{ maxWidth: 520, minHeight: "100vh" }}>
           <div className="flex items-center justify-between px-5" style={{ paddingTop: "calc(22px + env(safe-area-inset-top, 0px))" }}>
-            <span className="text-base font-bold" style={{ opacity: 0.8 }}>第 {ph.cycle} / {timerSession.total} 輪</span>
+            <span className="text-base font-bold" style={{ opacity: 0.8 }}>
+              第 {ph.set} / {timerSession.totalSets} 組
+              {timerSession.cyclesPerSet > 1 && <>　循環 {ph.cycle} / {timerSession.cyclesPerSet}</>}
+            </span>
             <div className="flex items-center gap-3">
               <button onClick={() => setSound((s) => !s)} className="flex h-11 w-11 items-center justify-center rounded-full text-xl" style={{ background: "rgba(0,0,0,0.15)" }}>{sound ? "🔊" : "🔈"}</button>
               <button onClick={quitTimer} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(0,0,0,0.15)" }}>✕</button>
@@ -588,8 +595,8 @@ export default function App() {
 
           <div className="flex items-center justify-between px-6 py-7" style={{ background: "rgba(0,0,0,0.12)" }}>
             <div className="flex flex-col items-center" style={{ width: 80 }}>
-              <span className="text-5xl font-black">{roundsLeft}</span>
-              <span className="text-sm font-bold" style={{ opacity: 0.75 }}>循環剩餘</span>
+              <span className="text-5xl font-black">{setsLeft}</span>
+              <span className="text-sm font-bold" style={{ opacity: 0.75 }}>組剩餘</span>
             </div>
             <button onClick={() => setTimerPaused((p) => !p)} className="flex items-center justify-center rounded-full text-4xl font-bold"
               style={{ width: 104, height: 104, background: pc.fg, color: pc.bg, boxShadow: "0 6px 20px rgba(0,0,0,0.3)" }}>
@@ -613,7 +620,7 @@ export default function App() {
         <div className="mx-auto flex flex-col items-center justify-center px-6" style={{ maxWidth: 520, minHeight: "100vh" }}>
           <div className="text-6xl">⏱️</div>
           <h2 className="mt-4 text-2xl font-bold">計時結束</h2>
-          <p className="mt-2 text-center" style={{ color: MUTED }}>完成 {timerFinishedTotal} 輪循環，做得好！</p>
+          <p className="mt-2 text-center" style={{ color: MUTED }}>完成 {timerFinishedTotal} 組，做得好！</p>
           <button onClick={() => setTimerFinished(false)} className="mt-8 rounded-xl px-6 py-3 font-semibold" style={{ background: th.accent, color: "#0c0f16" }}>回到主畫面</button>
         </div>
       </div>
@@ -625,7 +632,7 @@ export default function App() {
   const doneCount = routine ? routine.exercises.filter((e) => doneToday.has(e.id)).length : 0;
   const totalEx = routine ? routine.exercises.length : 0;
   const streak = calcStreak(days);
-  const timerTotalSec = timerCycles * timerTrainSec + timerCycles * timerRestSec + Math.max(0, timerCycles - 1) * timerCycleRestSec;
+  const timerTotalSec = timerSets * (timerCycles * timerTrainSec + timerCycles * timerRestSec) + Math.max(0, timerSets - 1) * timerSetRestSec;
   const customStepsSec = customSteps.filter((s) => s.sec > 0).reduce((a, s) => a + s.sec, 0);
   const customTotalSec = customStepsSec * customGroups + Math.max(0, customGroups - 1) * customGroupRestSec;
 
@@ -669,10 +676,11 @@ export default function App() {
                 <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
                   <div className="mb-3 text-sm font-semibold">計時器設定</div>
                   <div className="flex flex-col gap-3">
+                    <NumberField label="組數" value={timerSets} onChange={setTimerSets} min={1} max={50} step={1} suffix="組" />
                     <NumberField label="循環次數" value={timerCycles} onChange={setTimerCycles} min={1} max={50} step={1} suffix="輪" />
                     <NumberField label="訓練時間" value={timerTrainSec} onChange={setTimerTrainSec} min={5} max={1800} step={5} suffix="秒" />
                     <NumberField label="休息時間" value={timerRestSec} onChange={setTimerRestSec} min={0} max={600} step={5} suffix="秒" />
-                    <NumberField label="循環間休息" value={timerCycleRestSec} onChange={setTimerCycleRestSec} min={0} max={600} step={5} suffix="秒" />
+                    <NumberField label="組間休息" value={timerSetRestSec} onChange={setTimerSetRestSec} min={0} max={600} step={5} suffix="秒" />
                   </div>
                   <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(timerTotalSec)}</div>
                 </div>
