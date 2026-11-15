@@ -182,6 +182,7 @@ export default function App() {
   const [savedRoutines, setSavedRoutines] = useState(BUILTIN_ROUTINES);
   const [newRoutineName, setNewRoutineName] = useState("");
   const savedIdRef = useRef(3);
+  const [showEditor, setShowEditor] = useState(false);
 
   const audioRef = useRef(null);
   const wakeLockRef = useRef(null);
@@ -541,47 +542,60 @@ export default function App() {
             style={timerMode === "custom" ? { background: theme.accent, color: "#0c0f16" } : { color: MUTED, background: "transparent" }}>自訂課表</button>
         </div>
 
-        {/* 聲音設定 */}
-        <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-          <div className="flex items-center justify-between">
-            <span className="text-sm" style={{ color: MUTED }}>念出提示詞</span>
-            <Toggle on={speak} onClick={() => setSpeak((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-3">
-            <span className="shrink-0 text-sm" style={{ color: MUTED }}>節拍音量</span>
-            <VolumeSlider value={volume} onChange={setVolume} accent={theme.accent} />
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm">靜音時改用語音蜂鳴</div>
-              <div className="mt-0.5 text-[11px] leading-relaxed" style={{ color: MUTED }}>手機沒開靜音時建議關閉，才不會跟電子嗶聲同時播放；手機開靜音才需要打開（網頁無法偵測靜音開關狀態，需自行切換）</div>
-            </div>
-            <Toggle on={muteFallback} onClick={() => setMuteFallback((v) => !v)} labelOn="開" labelOff="關" accent={theme.accent} />
-          </div>
+        {/* 開始按鈕 */}
+        <button onClick={timerMode === "simple" ? startTimer : startCustomTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>
+          ▶ {timerMode === "simple" ? "開始計時" : "開始課表"}
+        </button>
+
+        {/* 念出提示詞 */}
+        <div className="mt-4 flex items-center justify-between rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+          <span className="text-sm" style={{ color: MUTED }}>念出提示詞</span>
+          <Toggle on={speak} onClick={() => setSpeak((s) => !s)} labelOn="開" labelOff="關" accent={theme.accent} />
         </div>
 
         {timerMode === "simple" ? (
-          <>
-            {/* 簡易間歇設定 */}
-            <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-              <div className="mb-3 text-sm font-semibold">計時器設定</div>
-              <div className="flex flex-col gap-3">
-                <NumberField label="組數" value={timerSets} onChange={setTimerSets} min={1} max={50} step={1} suffix="組" />
-                <NumberField label="循環次數" value={timerCycles} onChange={setTimerCycles} min={1} max={50} step={1} suffix="輪" />
-                <NumberField label="訓練時間" value={timerTrainSec} onChange={setTimerTrainSec} min={5} max={1800} step={5} suffix="秒" />
-                <NumberField label="休息時間" value={timerRestSec} onChange={setTimerRestSec} min={0} max={600} step={5} suffix="秒" />
-                <NumberField label="組間休息" value={timerSetRestSec} onChange={setTimerSetRestSec} min={0} max={600} step={5} suffix="秒" />
-              </div>
-              <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(timerTotalSec)}</div>
-            </div>
-
-            <button onClick={startTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始計時</button>
-          </>
+          <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(timerTotalSec)}</div>
         ) : (
           <>
-            {/* 自訂課表 */}
+            {/* 挑選課表：含內建的早晨／睡前範本，可存好幾組，挑今天要的 */}
             <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-              <div className="mb-3 text-sm font-semibold">自訂課表</div>
+              <div className="mb-3 text-sm font-semibold">挑選課表</div>
+              {savedRoutines.length > 0 ? (
+                <div className="flex flex-col gap-2">
+                  {savedRoutines.map((r) => (
+                    <div key={r.id} className="flex items-center gap-2 rounded-lg px-3 py-2.5" style={{ background: "rgba(255,255,255,0.04)" }}>
+                      <span className="min-w-0 flex-1 truncate text-sm font-semibold">{r.name}</span>
+                      <span className="shrink-0 text-[11px]" style={{ color: MUTED }}>{r.steps.length} 動作・{r.groups} 組</span>
+                      <button onClick={() => loadRoutine(r)} className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold" style={{ background: theme.accent, color: "#0c0f16" }}>套用</button>
+                      <button onClick={() => deleteRoutine(r.id)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm" style={{ color: MUTED, background: "rgba(255,255,255,0.05)" }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs" style={{ color: MUTED }}>還沒有已儲存的課表，可以在下方「編輯課表」建立後存成課表</div>
+              )}
+              <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>目前編輯中課表預計總時長　{fmtClock(customTotalSec)}</div>
+            </div>
+          </>
+        )}
+
+        {/* 編輯設定：收合，較少用才展開 */}
+        <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+          <button onClick={() => setShowEditor((v) => !v)} className="flex w-full items-center justify-between">
+            <span className="text-sm font-semibold">{timerMode === "simple" ? "計時器設定" : "編輯課表"}</span>
+            <span className="text-xs" style={{ color: MUTED }}>{showEditor ? "收合 ▲" : "展開 ▼"}</span>
+          </button>
+
+          {showEditor && (timerMode === "simple" ? (
+            <div className="mt-3 flex flex-col gap-3">
+              <NumberField label="組數" value={timerSets} onChange={setTimerSets} min={1} max={50} step={1} suffix="組" />
+              <NumberField label="循環次數" value={timerCycles} onChange={setTimerCycles} min={1} max={50} step={1} suffix="輪" />
+              <NumberField label="訓練時間" value={timerTrainSec} onChange={setTimerTrainSec} min={5} max={1800} step={5} suffix="秒" />
+              <NumberField label="休息時間" value={timerRestSec} onChange={setTimerRestSec} min={0} max={600} step={5} suffix="秒" />
+              <NumberField label="組間休息" value={timerSetRestSec} onChange={setTimerSetRestSec} min={0} max={600} step={5} suffix="秒" />
+            </div>
+          ) : (
+            <div className="mt-3">
               <div className="flex flex-col gap-2">
                 {customSteps.map((st, i) => (
                   <div key={st.id} className="flex items-center gap-2">
@@ -614,13 +628,8 @@ export default function App() {
                 <NumberField label="循環組數" value={customGroups} onChange={setCustomGroups} min={1} max={50} step={1} suffix="組" />
                 <NumberField label="組間休息" value={customGroupRestSec} onChange={setCustomGroupRestSec} min={0} max={600} step={5} suffix="秒" />
               </div>
-              <div className="mt-3 text-center text-[11px]" style={{ color: MUTED }}>預計總時長　{fmtClock(customTotalSec)}</div>
-            </div>
 
-            {/* 已儲存的課表：含內建的早晨／睡前範本，可存好幾組，挑今天要的 */}
-            <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
-              <div className="mb-3 text-sm font-semibold">已儲存的課表</div>
-              <div className="flex items-center gap-2">
+              <div className="mt-4 flex items-center gap-2 border-t pt-3" style={{ borderColor: BORDER }}>
                 <input
                   type="text"
                   value={newRoutineName}
@@ -631,23 +640,24 @@ export default function App() {
                 />
                 <button onClick={saveCurrentRoutine} className="shrink-0 rounded-lg px-3 py-2.5 text-sm font-semibold" style={{ background: theme.accent, color: "#0c0f16" }}>💾 存成新課表</button>
               </div>
-              {savedRoutines.length > 0 && (
-                <div className="mt-3 flex flex-col gap-2">
-                  {savedRoutines.map((r) => (
-                    <div key={r.id} className="flex items-center gap-2 rounded-lg px-3 py-2.5" style={{ background: "rgba(255,255,255,0.04)" }}>
-                      <span className="min-w-0 flex-1 truncate text-sm font-semibold">{r.name}</span>
-                      <span className="shrink-0 text-[11px]" style={{ color: MUTED }}>{r.steps.length} 動作・{r.groups} 組</span>
-                      <button onClick={() => loadRoutine(r)} className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold" style={{ background: theme.accent, color: "#0c0f16" }}>套用</button>
-                      <button onClick={() => deleteRoutine(r.id)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm" style={{ color: MUTED, background: "rgba(255,255,255,0.05)" }}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
+          ))}
+        </div>
 
-            <button onClick={startCustomTimer} className="mt-4 w-full rounded-2xl px-5 py-4 text-lg font-black" style={{ background: theme.accent, color: "#0c0f16", boxShadow: `0 4px 16px ${theme.soft}` }}>▶ 開始課表</button>
-          </>
-        )}
+        {/* 聲音設定（節拍音量等，較少調整） */}
+        <div className="mt-4 rounded-2xl px-4 py-3" style={{ background: SURFACE, border: `1px solid ${BORDER}` }}>
+          <div className="flex items-center justify-between gap-3">
+            <span className="shrink-0 text-sm" style={{ color: MUTED }}>節拍音量</span>
+            <VolumeSlider value={volume} onChange={setVolume} accent={theme.accent} />
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm">靜音時改用語音蜂鳴</div>
+              <div className="mt-0.5 text-[11px] leading-relaxed" style={{ color: MUTED }}>手機沒開靜音時建議關閉，才不會跟電子嗶聲同時播放；手機開靜音才需要打開（網頁無法偵測靜音開關狀態，需自行切換）</div>
+            </div>
+            <Toggle on={muteFallback} onClick={() => setMuteFallback((v) => !v)} labelOn="開" labelOff="關" accent={theme.accent} />
+          </div>
+        </div>
 
         <div className="mt-5 rounded-2xl p-4 text-xs leading-relaxed" style={{ background: "rgba(255,255,255,0.03)", border: `1px dashed ${BORDER}`, color: MUTED }}>
           <div className="mb-1 font-semibold" style={{ color: TEXT }}>安全提醒</div>
