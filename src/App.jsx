@@ -122,11 +122,16 @@ function Toggle({ on, onClick, labelOn, labelOff, accent }) {
   );
 }
 
-function VolumeSlider({ value, onChange, accent }) {
+function VolumeSlider({ value, onChange, accent, onMuteToggle, textColor = MUTED }) {
   const pct = Math.round(value * 100);
+  const icon = pct <= 0 ? "🔈" : pct < 50 ? "🔉" : "🔊";
   return (
     <div className="flex flex-1 items-center gap-3">
-      <span style={{ fontSize: 20 }}>{pct <= 0 ? "🔈" : pct < 50 ? "🔉" : "🔊"}</span>
+      {onMuteToggle ? (
+        <button onClick={onMuteToggle} style={{ fontSize: 20, color: textColor, lineHeight: 1 }}>{icon}</button>
+      ) : (
+        <span style={{ fontSize: 20, color: textColor }}>{icon}</span>
+      )}
       <input
         type="range"
         min={0}
@@ -136,7 +141,7 @@ function VolumeSlider({ value, onChange, accent }) {
         className="flex-1"
         style={{ accentColor: accent }}
       />
-      <span className="w-10 shrink-0 text-right text-xs font-semibold" style={{ color: MUTED }}>{pct}%</span>
+      <span className="w-10 shrink-0 text-right text-xs font-semibold" style={{ color: textColor }}>{pct}%</span>
     </div>
   );
 }
@@ -555,10 +560,10 @@ export default function App() {
             </div>
           )}
 
-          <div className="mt-auto flex w-full items-center justify-center gap-5 pt-8">
-            <button onClick={() => setSpeak((s) => !s)} className="text-sm" style={{ color: speak ? theme.accent : MUTED }}>{speak ? "🗣 語音" : "🔇 語音"}</button>
-            <button onClick={toggleMute} className="text-sm" style={{ color: volume > 0 ? theme.accent : MUTED }}>{volume > 0 ? "🔊 節拍" : "🔈 節拍"}</button>
-            <button onClick={quit} className="text-sm" style={{ color: MUTED }}>結束 ✕</button>
+          <div className="mt-auto flex w-full items-center justify-between gap-4 pt-8">
+            <button onClick={() => setSpeak((s) => !s)} className="shrink-0 text-sm" style={{ color: speak ? theme.accent : MUTED }}>{speak ? "🗣 語音" : "🔇 語音"}</button>
+            <div style={{ width: 150 }}><VolumeSlider value={volume} onChange={setVolume} onMuteToggle={toggleMute} accent={theme.accent} /></div>
+            <button onClick={quit} className="shrink-0 text-sm" style={{ color: MUTED }}>結束 ✕</button>
           </div>
 
           <div className="mt-4 flex w-full items-center justify-center gap-3 pb-2">
@@ -610,10 +615,11 @@ export default function App() {
               第 {ph.set} / {timerSession.totalSets} 組
               {timerSession.cyclesPerSet > 1 && <>　循環 {ph.cycle} / {timerSession.cyclesPerSet}</>}
             </span>
-            <div className="flex items-center gap-3">
-              <button onClick={toggleMute} className="flex h-11 w-11 items-center justify-center rounded-full text-xl" style={{ background: "rgba(0,0,0,0.15)" }}>{volume > 0 ? "🔊" : "🔈"}</button>
-              <button onClick={quitTimer} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(0,0,0,0.15)" }}>✕</button>
-            </div>
+            <button onClick={quitTimer} className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-bold" style={{ background: "rgba(0,0,0,0.15)" }}>✕</button>
+          </div>
+
+          <div className="flex items-center px-5 pt-3">
+            <VolumeSlider value={volume} onChange={setVolume} onMuteToggle={toggleMute} accent={pc.fg} textColor={pc.fg} />
           </div>
 
           <div className="flex flex-1 flex-col items-center justify-center px-6">
